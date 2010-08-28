@@ -18,6 +18,8 @@
         args (into-array Type args)]
     (Type/getMethodDescriptor (last types) args)))
 
+
+
 (defn header [cv name]
   (.visit cv
           (op V1_5)
@@ -38,176 +40,298 @@
                 nil
                 nil))
 
-(defn int-value [mv]
+(defprotocol ANumber
+  (isZero [T mv] "1")
+  (isPos [T mv] "1")
+  (isNeg [T mv] "1")
+  (add [T mv] "2")
+  (multiply [T mv] "2")
+  (divide [T mv] "2")
+  (quotient [T mv] "2")
+  (remainder [T mv] "2")
+  (Nequiv [T mv] "2")
+  (lt [T mv] "2")
+  (negate [T mv] "1")
+  (Ninc [T mv] "1")
+  (Ndec [T mv] "1"))
+
+(defprotocol VMType
+  (return [t cv])
+  (Tload [t n cv])
+  (asmType [t])
+  (Tsize [t]))
+
+(declare asmType)
+
+(defn Aop [mv nam types]
   (.visitMethodInsn
    mv
-   (op INVOKEVIRTUAL)
-   (.getInternalName (Type/getType "Ljava/lang/Number;"))
-   "intValue"
-   (method-desciptor [(type int)])))
+   (op INVOKEINTERFACE)
+   "LArchimedes/Ops;"
+   (name nam)
+   (method-desciptor
+    (map asmType types))))
 
-(defn long-value [mv]
-  (.visitMethodInsn
-   mv
-   (op INVOKEVIRTUAL)
-   (.getInternalName (Type/getType "Ljava/lang/Number;"))
-   "longValue"
-   (method-desciptor [(type long)])))
+(defprotocol Boxed
+  (unbox [t cv])
+  (unboxedType [t]))
 
-(defn double-value [mv]
-  (.visitMethodInsn
-   mv
-   (op INVOKEVIRTUAL)
-   (.getInternalName (Type/getType "Ljava/lang/Number;"))
-   "doubleValue"
-   (method-desciptor [(type long)])))
+(defprotocol Boxable
+  (box [t cv])
+  (boxedType [t]))
 
-(defn Aop [cw meth types]
-  (.visitMethodInsn cw
-                    (op INVOKESTATIC)
-                    (.getInternalName (Type/getType "LArchimedes/Ops;"))
-                    (name meth)
-                    (method-desciptor types)))
+(defrecord PInteger []
+  VMType
+  (return
+   [t cv]
+   (.visitInsn cv (op IRETURN)))
+  (Tload
+   [t n cv]
+   (.visitIntInsn cv (op ILOAD) n)
+   t)
+  (Tsize
+   [t]
+   (.getSize (asmType t)))
+  (asmType
+   [t]
+   (type int))
+  Boxable
+  (box [t cv])
+  (boxedType [t])
+  ANumber
+  (isZero [n mv]
+          n)
+  (isPos [n mv]
+         n)
+  (isNeg [n mv]
+         n)
+  (add
+   [n mv]
+   (.visitInsn mv (op IADD))
+   n)
+  (multiply
+   [n mv]
+   (.visitInsn mv (op IMUL))
+   n)
+  (divide
+   [n cv]
+   (.visitInsn cv (op IDIV))
+   n)
+  (quotient [n cv]
+            n)
+  (remainder
+   [n cv]
+   (.visitInsn cv (op IREM))
+   n)
+  (Nequiv [n cv]
+          n)
+  (lt [n cv]
+      n)
+  (negate
+   [n cv]
+   (.visitInsn cv (op INEG))
+   n)
+  (Ninc
+   [n cv]
+   (.visitLdcInsn cv 1)
+   (add n cv)
+   n)
+  (Ndec
+   [n cv]
+   (.visitLdcInsn cv 1)
+   (negate n cv)
+   (add n cv)
+   n))
 
-(defn box [mv prim box]
-  (.visitTypeInsn mv (op NEW) (.getInternalName box))
-  (if (< 1 (.getSize prim))
-    (do
-      (.visitInsn mv (op DUP_X2))
-      (.visitInsn mv (op POP)))
-    (do
-      (.visitInsn mv (op DUP_X1))
-      (.visitInsn mv (op SWAP))))
-  (.visitMethodInsn mv
-                    (op INVOKESPECIAL)
-                    (.getInternalName box) "<init>"
-                    (method-desciptor [prim (type VOID)])))
+(declare boxed-long)
 
-(defmulti add (fn [cw & types] (vec types)))
+(defrecord PLong []
+  VMType
+  (return
+   [t cv]
+   (.visitInsn cv (op LRETURN)))
+  (Tload
+   [t n cv]
+   (.visitIntInsn cv (op LLOAD) n)
+   t)
+  (Tsize
+   [t]
+   (.getSize (asmType t)))
+  (asmType
+   [t]
+   (type long))
+  Boxable
+  (box
+   [t mv]
+   (.visitTypeInsn mv (op NEW) (.getInternalName
+                                (asmType (boxedType t))))
+   (.visitInsn mv (op DUP_X2))
+   (.visitMethodInsn mv (op INVOKESPECIAL)
+                     (.getInternalName
+                      (asmType (boxedType t)))
+                     "<init>"
+                     (method-desciptor [(asmType t) (type VOID)])))
+  (boxedType
+   [t]
+   (boxed-long))
+  ANumber
+  (isZero [n mv]
+          n)
+  (isPos [n mv]
+         n)
+  (isNeg [n mv]
+         n)
+  (add
+   [n mv]
+   (.visitInsn mv (op LADD))
+   n)
+  (multiply
+   [n mv]
+   (.visitInsn mv (op LMUL))
+   n)
+  (divide
+   [n cv]
+   (.visitInsn cv (op LDIV))
+   n)
+  (quotient [n cv]
+            n)
+  (remainder
+   [n cv]
+   (.visitInsn cv (op LREM))
+   n)
+  (Nequiv [n cv]
+          n)
+  (lt [n cv]
+      n)
+  (negate
+   [n cv]
+   (.visitInsn cv (op LNEG))
+   n)
+  (Ninc
+   [n cv]
+   (.visitLdcInsn cv (Long. "1"))
+   (add n cv)
+   n)
+  (Ndec
+   [n cv]
+   (.visitLdcInsn cv (Long. "1"))
+   (negate n cv)
+   (add n cv)
+   n))
 
-(def o
-  {:int {:return (op IRETURN)
-         :load (op ILOAD)
-         :add (op IADD)
-         :type (type int)
-         :boxed (Type/getType "Ljava/lang/Integer;")}
-   :long {:return (op LRETURN)
-          :load (op LLOAD)
-          :add (op LADD)
-          :type (type long)
-          :boxed (Type/getType "Ljava/lang/Long;")}
-   :double {:return (op DRETURN)
-            :load (op DLOAD)
-            :add (op DADD)
-            :type (type double)
-            :boxed (Type/getType "Ljava/lang/Double;")}
-   :float  {:return (op FRETURN)
-            :load (op FLOAD)
-            :add (op FADD)
-            :type (type float)
-            :boxed (Type/getType "Ljava/lang/Float;")}
-   :java.math.BigInteger
-   {:return (op ARETURN)
-    :load (op ALOAD)
-    :add (fn [mv]
-           (let [t (Type/getType "Ljava/math/BigInteger;")]
-             (.visitMethodInsn
-              mv
-              (op INVOKEVIRTUAL)
-              (.getInternalName t)
-              "add"
-              (method-desciptor [t t]))))
-    :type (Type/getType "Ljava/math/BigInteger;")}
-   :java.math.BigDecimal
-   {:return (op ARETURN)
-    :load (op ALOAD)
-    :add (fn [mv]
-           (let [t (Type/getType "Ljava/math/BigDecimal;")]
-             (.visitMethodInsn
-              mv
-              (op INVOKEVIRTUAL)
-              (.getInternalName t)
-              "add"
-              (method-desciptor [t t]))))
-    :type (Type/getType "Ljava/math/BigDecimal;")}
-   :java.lang.Integer
-   {:return (op ARETURN)
-    :load (op ALOAD)
-    :add (fn [mv]
-           (let [t (Type/getType "Ljava/lang/Integer;")]
-             (doto mv
-               int-value
-               (.visitInsn (op SWAP))
-               int-value
-               (Aop :add [(type int) (type int) (type int)])
-               (box (type int) t))))
-    :type (Type/getType "Ljava/lang/Integer;")}
-   :java.lang.Long
-   {:return (op ARETURN)
-    :load (op ALOAD)
-    :add (fn [mv]
-           (let [t (Type/getType "Ljava/lang/Long;")]
-             (doto mv
-               long-value
-               (.visitInsn (op DUP2_X1))
-               (.visitInsn (op POP2))
-               long-value
-               (Aop :add [(type long) (type long) (type long)])
-               (box (type long) t))))
-    :type (Type/getType "Ljava/lang/Long;")}
-   :java.lang.Double
-   {:return (op ARETURN)
-    :load (op ALOAD)
-    :add (fn [mv]
-           (let [t (Type/getType "Ljava/lang/Double;")]
-             (doto mv
-               double-value
-               (.visitInsn (op DUP2_X1))
-               (.visitInsn (op POP2))
-               double-value
-               (Aop :add [(type double) (type double) (type double)])
-               (box (type double) t))))
-    :type (Type/getType "Ljava/lang/Double;")}})
+(defn binary-boxed-long [n mv name]
+  (unbox n mv)
+  (.visitInsn mv (op DUP2_X1))
+  (.visitInsn mv (op POP2))
+  (unbox n mv)
+  (Aop mv name (repeat 3 (unboxedType n)))
+  (box (unboxedType n) mv))
 
-(defn add-fn [cw types]
-  (let [[type1 type2 type3] types
-        mv (method cw :add (map (comp :type o) types))
-        add (-> o type1 :add)
-        add (if (fn? add) add (fn [mv] (.visitInsn mv add)))]
-    (doto mv
-      (.visitCode)
-      (.visitIntInsn (-> o type1 :load) 0)
-      (.visitIntInsn (-> o type2 :load) (-> o type1 :type .getSize))
-      add
-      (.visitInsn (-> o type1 :return))
-      (.visitMaxs 0 0)
-      (.visitEnd))))
+(defrecord BLong []
+  VMType
+  (return
+   [t cv]
+   (.visitInsn cv (op ARETURN)))
+  (Tload
+   [t n cv]
+   (.visitIntInsn cv (op ALOAD) n)
+   t)
+  (Tsize
+   [t]
+   (.getSize (asmType t)))
+  (asmType
+   [t]
+   (Type/getType "Ljava/lang/Long;"))
+  Boxed
+  (unbox
+   [t mv]
+   (.visitMethodInsn
+    mv
+    (op INVOKEINTERFACE)
+    "Ljava/lang/Number;"
+    "longValue"
+    (method-desciptor [(asmType (unboxedType t))])))
+  (unboxedType
+   [t]
+   (PLong.))
+  ANumber
+  (isZero [n mv]
+          n)
+  (isPos [n mv]
+         n)
+  (isNeg [n mv]
+         n)
+  (add
+   [n mv]
+   (binary-boxed-long n mv :add)
+   n)
+  (multiply
+   [n mv]
+   (binary-boxed-long n mv :multiply)
+   n)
+  (divide
+   [n mv]
+   (binary-boxed-long n mv :divide)
+   n)
+  (quotient [n cv]
+            n)
+  (remainder
+   [n cv]
+   (.visitInsn cv (op LREM))
+   n)
+  (Nequiv [n cv]
+          n)
+  (lt [n cv]
+      n)
+  (negate
+   [n cv]
+   (.visitInsn cv (op LNEG))
+   n)
+  (Ninc
+   [n cv]
+   (.visitLdcInsn cv (Long. "1"))
+   (box (unboxedType n) cv)
+   (add n cv)
+   n)
+  (Ndec
+   [n cv]
+   (.visitLdcInsn cv (Long. "1"))
+   (negate (unboxedType n) cv)
+   (box (unboxedType n) cv)
+   (add n cv)
+   n))
 
-(defmacro add! []
-  (let [ms (for [[ktype] o]
-             `(defmethod ~'add ~(vec (repeat 3 ktype)) [cw# & types#]
-                (add-fn cw# types#)))]
-    `(do
-       ~@ms)))
+(defn boxed-long []
+  (BLong.))
 
-(add!)
+(defn method-list []
+  (for [[nam {doc :doc}] (:sigs ANumber)]
+    [nam @(ns-resolve *ns* (symbol (name nam)))
+     (read-string doc)]))
 
-(defn overload [cv fn ptypes & types]
-  (let [n (count ptypes)]
-    (doseq [t types]
-      (apply add cv (repeat n t))))
-  cv)
+(defn types []
+  (->> (ns-imports *ns*)
+       vals
+       (map (memfn getName))
+       (filter #(.startsWith % (name (.getName *ns*))))
+       (map #(Class/forName %))
+       (map (memfn newInstance))))
 
 (when *compile-files*
   (let [name "Archimedes/Ops"
         bytes (.toByteArray
                (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
                  (header name)
-                 (overload add [:a :a :a]
-                           :int :long :double :float
-                           :java.math.BigInteger :java.math.BigDecimal
-                           :java.lang.Integer :java.lang.Long
-                           :java.lang.Double)
+                 ((fn [cv]
+                    (doseq [t (types)
+                            [name gen argc] (method-list)]
+                      (let [m (method cv name (repeat (inc argc) (asmType t)))]
+                        (dotimes [i argc]
+                          (Tload t (* i (Tsize t)) m))
+                        (let [rt (gen t m)]
+                          (return rt m))
+                        (.visitMaxs m 0 0)
+                        (.visitEnd m)))))
                  .visitEnd))]
     (.mkdirs (file *compile-path* "Archimedes"))
     (copy bytes (file *compile-path* "Archimedes/Ops.class"))))
