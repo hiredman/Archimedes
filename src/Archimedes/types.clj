@@ -1,7 +1,7 @@
 (ns Archimedes.types
   (:refer-clojure :exclude [type])
   (:use [Archimedes.asm])
-  (:import [clojure.asm Type]))
+  (:import [clojure.asm Type Label]))
 
 (defprotocol ANumber
   (isZero [T mv] "1")
@@ -38,7 +38,7 @@
 (defn numOps [mv nam types]
   (.visitMethodInsn
    mv
-   (op INVOKEINTERFACE)
+   (op INVOKEVIRTUAL)
    "Ljava/lang/Number;"
    (name nam)
    (method-desciptor
@@ -276,6 +276,115 @@
 (defn boxed-long []
   (BLong.))
 
+(defn instance-jmp [mv atype label]
+  (doto mv
+    (.visitInsn (op DUP))
+    (.visitTypeInsn (op INSTANCEOF) (.getInternalName (asmType atype)))
+    (.visitJumpInsn (op IFNE) label)))
+
+(defmacro labels [labels & body]
+  (let [labs (vec
+              (mapcat
+               (fn [[nam]]
+                 (let [name (symbol (.toUpperCase (name nam)))]
+                   [name `(new Label)]))
+                   labels))]
+    `(let ~labs
+       (letfn ~labels
+         ~@body))))
+
+(defrecord INumber []
+  VMType
+  (return
+   [t cv]
+   (.visitInsn cv (op ARETURN)))
+  (Tload
+   [t n cv]
+   (.visitIntInsn cv (op ALOAD) n)
+   t)
+  (Tsize
+   [t]
+   (.getSize (asmType t)))
+  (asmType
+   [t]
+   (Type/getType "Ljava/lang/Number;"))
+  ANumber
+  (isZero [n mv]
+          n)
+  (isPos [n mv]
+         n)
+  (isNeg [n mv]
+         n)
+  (add
+   [n mv]
+   (let [LONG-NUMBER (Label.)
+         LONG-LONG (Label.)
+         START (Label.)
+         END (Label.)
+         ERROR (Label.)]
+     (letfn [(error
+              [mv]
+              (.visitInsn mv (op POP))
+              (.visitInsn mv (op POP))
+              (.visitLdcInsn mv (Long. "1"))
+              (.visitInsn mv (op LNEG))
+              (box (unboxedType (BLong.))  mv)
+              (.visitJumpInsn mv (op GOTO) END))
+             (long-number
+              [mv]
+              (.visitInsn mv (op SWAP))
+              (instance-jmp mv (BLong.) LONG-LONG)
+              (.visitJumpInsn mv (op GOTO) ERROR))
+             (long-long
+              [mv]
+              (doto mv
+                (.visitTypeInsn (op CHECKCAST) (.getInternalName
+                                                (asmType (BLong.))))
+                (.visitInsn (op SWAP))
+                (.visitTypeInsn (op CHECKCAST) (.getInternalName
+                                                (asmType (BLong.))))
+                (Aop :add (repeat 3 (BLong.)))
+                (.visitJumpInsn (op GOTO) END)))]
+       (doto mv
+         (instance-jmp (BLong.) LONG-NUMBER)
+         (.visitJumpInsn (op GOTO) ERROR)
+
+         (.visitLabel LONG-NUMBER)
+         long-number
+
+         (.visitLabel LONG-LONG)
+         long-long
+
+         (.visitLabel ERROR)
+         error
+
+         (.visitLabel END))))
+   n)
+  (multiply
+   [n mv]
+   n)
+  (divide
+   [n mv]
+   n)
+  (quotient [n cv]
+            n)
+  (remainder
+   [n mv]
+   n)
+  (Nequiv [n cv]
+          n)
+  (lt [n cv]
+      n)
+  (negate
+   [n cv]
+   n)
+  (Ninc
+   [n cv]
+   n)
+  (Ndec
+   [n cv]
+   n))
+
 (defn method-list []
   (for [[nam {doc :doc}] (:sigs ANumber)]
     [nam @(ns-resolve *ns* (symbol (name nam)))
@@ -287,6 +396,6 @@
   (->> (ns-imports n)
        vals
        (map (memfn getName))
-       (filter #(.startsWith % "Archimedes"))
+       (filter #(.startsWith % "Archimedes.types"))
        (map #(Class/forName %))
        (map (memfn newInstance))))
