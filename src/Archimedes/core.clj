@@ -14,13 +14,7 @@
                  ((fn [cv]
                     (doseq [t (types)
                             [name gen argc] (method-list)]
-                      (let [m (method cv name (repeat (inc argc) (asmType t)))]
-                        (dotimes [i argc]
-                          (Tload t (* i (Tsize t)) m))
-                        (let [rt (gen t m)]
-                          (return rt m))
-                        (.visitMaxs m 0 0)
-                        (.visitEnd m)))))
+                      (gen t nil2 cv))))
                  .visitEnd))]
     (.mkdirs (file *compile-path* "Archimedes"))
     (copy bytes (file *compile-path* "Archimedes/Ops.class"))))
