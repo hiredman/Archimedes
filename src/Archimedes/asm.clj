@@ -36,3 +36,12 @@
                 (method-desciptor types)
                 nil
                 nil))
+
+(defn goto [method-visitor label]
+  (.visitJumpInsn method-visitor (op GOTO) label))
+
+(defn ldc [method-visitor c]
+  (.visitLdcInsn method-visitor c))
+
+(defn label [method-visitor label]
+  (.visitLabel method-visitor label))
