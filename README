@@ -1,6 +1,10 @@
 # Archimedes
 
-FIXME: write description
+lein compile
+
+you will end up with a bunch of junk in ./classes/ but the only thing you need
+is Archimedes/Ops.class has a bunch of static methods similar to the Ops objects
+in clojure.lang.Numbers
 
 ## Usage
 

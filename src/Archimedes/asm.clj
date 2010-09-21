@@ -45,3 +45,33 @@
 
 (defn label [method-visitor label]
   (.visitLabel method-visitor label))
+
+(comment
+  (defrecord Instruction [n args]
+    clojure.lang.IFn
+    (invoke
+     [i method-writer]
+     (case (count args)
+           0
+           (.visitInsn
+            method-writer
+            (clojure.lang.Reflector/getStaticField
+             "clojure.asm.Type"
+             (name n)))
+           1
+           (.visitIntInsn ))))
+
+  (defrecord Method [access mname signature instructions]
+    clojure.lang.IFn
+    (invoke
+     [m cw]
+     (let [signature (map #(.getDescriptor %) signature)
+           args (butlast signature)
+           return (last signature)
+           args (reduce str "" args)
+           method (.visitMethod
+                   cw (reduce + access) (name mname) (format "(%s)%s" args return)
+                   nil nil)]
+       (.visitCode method)
+       (.visitMaxs method 0 0)
+       (.visitEnd method)))))
