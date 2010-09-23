@@ -192,7 +192,8 @@
 
   (define-function [machine expr]
     (let [[_ [args & body]] expr]
-      (let [class-name (format "Archimedes._20$%s" (gensym 'fn))
+      (let [class-name (format "%s$%s" (.replaceAll (:name machine) "/" ".")
+                               (gensym 'fn))
             class-description (.replaceAll class-name "\\." "/")
             new-machine (doto (assoc machine
                                 :class-writer
@@ -233,9 +234,12 @@
    (when-not (:ctor machine) (default-ctor machine))
    (.visitEnd class-writer)))
 
+(defn jvm []
+  (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil))
+
 (defn g []
-  (let [class-name "Archimedes/_25"
-        machine (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil)
+  (let [class-name "Archimedes/one"
+        machine (jvm)
         machine (init machine {:name class-name :super "clojure/lang/AFn"})
         machine (start-procedure machine "invoke"
                                  {:method-descriptor [(type-of machine :obj)]
