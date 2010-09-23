@@ -15,7 +15,9 @@
    :var (Type/getType "Lclojure/lang/Var;")
    :int (Type/getType "Ljava/lang/Integer;")
    :fn (Type/getType "Lclojure/lang/IFn;")
-   :void Type/VOID_TYPE})
+   :void Type/VOID_TYPE
+   :symbol (Type/getType "Lclojure/lang/Symbol;")
+   :namespace (Type/getType "Lclojure/lang/Namespace;")})
 
 (defn method-desciptor [types]
   (let [args (when (> (count types) 1)
@@ -24,6 +26,7 @@
     (Type/getMethodDescriptor (last types) args)))
 
 (defn method-call [method-writer op method arg-types]
+  (println "Compiling method call:" method)
   (let [owner (.replaceAll (namespace method) "\\." "/")
         method (name method)]
     (.visitMethodInsn method-writer
@@ -61,7 +64,7 @@
     (.visitMaxs method-writer 0 0)
     (.visitEnd method-writer)))
 
-(defrecord JVM [types class-writer method-writer]
+(defrecord JVM [types class-writer method-writer namespaces]
   Machine
 
   (init
@@ -86,6 +89,7 @@
 
   (start-procedure
    [machine name attrs]
+   (println "Start procedure:" name)
    (let [method-writer (.visitMethod class-writer
                                      (:access attrs)
                                      name
@@ -109,44 +113,56 @@
 
   (procedure-call
    [machine a-name args]
+   (println machine a-name args)
    (let [klass (Class/forName (namespace a-name))
          method (name a-name)
-         argc (:argc args)]
-     (object-array method-writer argc)
-     (if (:static args)
+         argc (:argc args)
+         _ (object-array method-writer argc)
+         machine (if (:static args)
+                   (do
+                     (doto method-writer
+                       (.visitLdcInsn (namespace a-name))
+                       (method-call
+                        (op INVOKESTATIC)
+                        :java.lang.Class/forName
+                        [(Type/getType "Ljava/lang/String;")
+                         (Type/getType "Ljava/lang/Class;")])
+                       (.visitInsn (op SWAP))
+                       (.visitLdcInsn (name method))
+                       (.visitInsn (op SWAP))
+                       (method-call
+                        (op INVOKESTATIC)
+                        :clojure.lang.Reflector/invokeStaticMethod
+                        [(Type/getType "Ljava/lang/Class;")
+                         (Type/getType "Ljava/lang/String;")
+                         (Type/getType "[Ljava/lang/Object;")
+                         (:obj types)]))
+                     (update-in machine [:variable-stack]
+                                (fn [stack]
+                                  (conj (nth (iterate pop stack) argc)
+                                        (:obj types))))))]
+     (if (:do machine)
        (do
-         (doto method-writer
-           (.visitLdcInsn (namespace a-name))
-           (method-call
-            (op INVOKESTATIC)
-            :java.lang.Class/forName
-            [(Type/getType "Ljava/lang/String;")
-             (Type/getType "Ljava/lang/Class;")])
-           (.visitInsn (op SWAP))
-           (.visitLdcInsn (name method))
-           (.visitInsn (op SWAP))
-           (method-call
-            (op INVOKESTATIC)
-            :clojure.lang.Reflector/invokeStaticMethod
-            [(Type/getType "Ljava/lang/Class;")
-             (Type/getType "Ljava/lang/String;")
-             (Type/getType "[Ljava/lang/Object;")
-             (:obj types)]))
-         (update-in machine [:variable-stack]
-                    (fn [stack]
-                      (conj (nth (iterate pop stack) argc)
-                            (:obj types))))))))
+         (.visitInsn method-writer (op POP))
+         (update-in machine [:variable-stack] pop))
+       machine)))
 
   (function-call
    [machine args]
+   (println "Function call")
    (method-call method-writer
                 (op INVOKEINTERFACE)
                 :clojure.lang.IFn/invoke
                 (repeat (inc args) :obj))
-   machine)
+   (if (:do machine)
+     (do
+       (.visitInsn method-writer (op POP))
+       machine)
+     (update-in machine [:variable-stack] conj (type-of machine :obj))))
 
   (resolve-var
    [machine var]
+   (println "Resolving var:" var)
    (doto method-writer
      (.visitLdcInsn (name (.getName (.ns var))))
      (.visitLdcInsn (name (.sym var)))
@@ -166,6 +182,7 @@
 
   (access-local
    [machine local]
+   (println "Accessing local:" local)
    (let [[idx _] (first (filter #(= local (second %))
                                 (map-indexed vector (:locals machine))))]
      (.visitIntInsn method-writer (op ALOAD) (inc idx))
@@ -173,29 +190,52 @@
 
   (immediate
    [machine value attrs]
-   (.visitLdcInsn method-writer value)
-   (cond
-    (instance? Integer value)
-    (do
-      (doto method-writer
-        (.visitTypeInsn (op NEW) "java/lang/Integer")
-        (.visitInsn (op DUP_X1))
-        (.visitInsn (op SWAP))
-        (.visitMethodInsn
-         (op INVOKESPECIAL)
-         "java/lang/Integer"
-         "<init>"
-         (method-desciptor [Type/INT_TYPE (:void types)])))
-      (update-in machine [:variable-stack] conj (:int types)))
-    (instance? String value)
-    (update-in machine [:variable-stack] conj (:str types))))
+   (println "Loading Constant:" value)
+   (let [machine (cond
+                  (instance? Integer value)
+                  (do
+                    (.visitLdcInsn method-writer value)
+                    (doto method-writer
+                      (.visitTypeInsn (op NEW) "java/lang/Integer")
+                      (.visitInsn (op DUP_X1))
+                      (.visitInsn (op SWAP))
+                      (.visitMethodInsn
+                       (op INVOKESPECIAL)
+                       "java/lang/Integer"
+                       "<init>"
+                        (method-desciptor [Type/INT_TYPE (:void types)])))
+                    (update-in machine [:variable-stack] conj (:int types)))
+                  (instance? String value)
+                  (do
+                    (.visitLdcInsn method-writer value)
+                    (update-in machine [:variable-stack] conj (:str types)))
+                  (symbol? value)
+                  (do
+                    (if (namespace value)
+                      (.visitLdcInsn method-writer (namespace value))
+                      (.visitInsn method-writer (op ACONST_NULL)))
+                    (doto method-writer
+                      (.visitLdcInsn (name value))
+                      (method-call (op INVOKESTATIC)
+                                   :clojure.lang.Symbol/intern
+                                   [:str :str :symbol]))
+                    (update-in machine [:variable-stack]
+                               conj (type-of machine :symbol))))]
+     (if (:do machine)
+       (do
+         (.visitInsn method-writer (op POP))
+         (update-in machine [:variable-stack] pop))
+       machine)))
 
   (define-function [machine expr]
+    (println "Defining function:" expr)
     (let [[_ [args & body]] expr]
-      (let [class-name (format "%s$%s" (.replaceAll (:name machine) "/" ".")
+      (let [class-name (format "%s$%s"
+                               (:namespace machine (.getName *ns*))
                                (gensym 'fn))
             class-description (.replaceAll class-name "\\." "/")
             new-machine (doto (assoc machine
+                                :do false
                                 :class-writer
                                 (ClassWriter. ClassWriter/COMPUTE_FRAMES))
                           (init {:name class-description
@@ -213,11 +253,11 @@
                                           :access (op ACC_PUBLIC)})
 
             new-machine (generate-code (cons 'do body) new-machine)
-            _ (println new-machine)
             _ (.visitInsn (:method-writer new-machine) (op ARETURN))
             new-machine (end-procedure new-machine)
             file-name (format "%s.class" class-description)]
-        (fin new-machine nil)
+        (when-not (:ctor machine) (default-ctor new-machine))
+        (.visitEnd (:class-writer new-machine))
         (.putNextEntry (:jaros machine) (ZipEntry. file-name))
         (copy (.toByteArray (:class-writer new-machine))
               (:jaros machine))
@@ -228,14 +268,77 @@
           (method-call (op INVOKESPECIAL)
                        (keyword class-name "<init>")
                        [:void]))
-        (update-in machine [:variable-stack] conj (:fn types)))))
+        (update-in machine [:variable-stack] conj (type-of machine :fn)))))
   (fin
    [machine values]
    (when-not (:ctor machine) (default-ctor machine))
-   (.visitEnd class-writer)))
+   (.visitEnd class-writer)
+   (doseq [[a-name [class-writer method-writer]] @(:namespaces machine)]
+     (.visitInsn method-writer (op RETURN))
+     (.visitMaxs method-writer 0 0)
+     (.visitEnd method-writer)
+     (.visitEnd class-writer)
+     (.putNextEntry (:jaros machine)
+                    (ZipEntry. (format "%s__init.class"
+                                       (.replaceAll
+                                        (name a-name) "\\."  "/"))))
+     (copy (.toByteArray class-writer)
+           (:jaros machine))
+     (.closeEntry (:jaros machine)))
+   machine)
+  (start-namespace
+   [machine namespace]
+   (println "Starting Namespace:" namespace)
+   (when-not (contains? @namespaces namespace)
+     (let [class-writer (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
+                          (.visit (op V1_5)
+                                  (+ (op ACC_PUBLIC)
+                                     (op ACC_FINAL))
+                                  (format "%s__init"
+                                          (.replaceAll (name namespace)
+                                                       "\\." "/"))
+                                  nil
+                                  "java/lang/Object"
+                                  nil))
+           method-writer (.visitMethod class-writer
+                                       (op ACC_STATIC)
+                                       "<clinit>"
+                                       (method-desciptor
+                                        [(type-of machine :void)])
+                                       nil
+                                       nil)]
+       (.visitInsn method-writer (op ACONST_NULL))
+       ;;TODO: static field with namespace object in it
+       ;;TODO: push/pop bindings for *ns*
+       (swap! namespaces assoc namespace [class-writer method-writer])))
+   machine)
+
+  (define [machine a-name value]
+    (println "Defining:" a-name value)
+    (let [ns (:namespace machine)
+          [cw mw] (ns @namespaces)
+          new-machine (assoc machine
+                        :class-writer cw
+                        :method-writer mw
+                        :variable-stack nil)
+          _ (doto mw
+              (.visitLdcInsn (name ns))
+              (.visitLdcInsn (name a-name)))
+          new-machine (generate-code value new-machine)]
+      (doto mw
+        (method-call (op INVOKESTATIC)
+                     :clojure.lang.RT/var
+                     [:str :str :obj :var]))
+      (doto method-writer
+        (.visitLdcInsn (name ns))
+        (.visitLdcInsn (name a-name))
+        (method-call (op INVOKESTATIC)
+                     :clojure.lang.RT/var
+                     [:str :str :var]))
+      (update-in machine [:variable-stack] conj (type-of machine :var)))))
 
 (defn jvm []
-  (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil))
+  (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil (atom {})))
 
 (defn g []
   (let [class-name "Archimedes/one"
@@ -244,7 +347,10 @@
         machine (start-procedure machine "invoke"
                                  {:method-descriptor [(type-of machine :obj)]
                                   :access (op ACC_PUBLIC)})
-        machine (generate-code '((fn* ([x] x)) "foo") machine)
+        machine (generate-code '(do (in-ns 'a.b)
+                                    (def x 1)
+                                    ((fn* ([x] x)) 1)) machine)
+        #_(generate-code '((fn* ([x] (+ 1 2) x)) "foo") machine)
         _ (.visitInsn (:method-writer machine) (op ARETURN))
         machine (end-procedure machine)]
     (fin machine nil)

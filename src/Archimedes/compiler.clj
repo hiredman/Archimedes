@@ -13,7 +13,9 @@
   (resolve-var [machine var] "resolve clojure var")
   (access-local [machine local])
   (immediate [machine value attrs])
-  (define-function [machine attrs]))
+  (define-function [machine attrs])
+  (start-namespace [machine namespace])
+  (define [machine name value]))
 
 (defprotocol Compilable
   (generate-code [expr machine]))
@@ -22,13 +24,25 @@
   clojure.lang.ISeq
   (generate-code
    [expr cxt]
-   (let [oper (first expr)
+   (println "Compiling:" expr)
+   (let [cxt (dissoc cxt :do)
+         oper (first expr)
          args (rest expr)]
      (cond
+      (= 'def oper)
+      (define cxt (first args) (second args))
+      (= 'quote oper)
+      (immediate cxt (first args) nil)
       (= 'fn* oper)
       (define-function cxt expr)
       (= 'do oper)
-      (last (doall (map #(generate-code % cxt) (rest expr))))
+      (generate-code (last args)
+                     (assoc cxt
+                       :namespace (:namespace
+                                   (reduce
+                                    #(generate-code %2 %)
+                                    (assoc cxt :do true)
+                                    (butlast args)))))
       (= '. oper)
       (let [[_ klass-or-object method & args] expr
             [method args] (if (seq? method)
@@ -48,11 +62,17 @@
       (let [context (dissoc (generate-code (first expr)
                                            (assoc cxt :fn-call true))
                             :fn-call)
-            context (reduce #(generate-code %2 %) context args)]
+            context (reduce #(generate-code %2 %) context args)
+            context (if (= 'in-ns oper)
+                      (do
+                        (start-namespace context (last (first args)))
+                        (assoc context :namespace (last (first args))))
+                      context)]
         (function-call context (count args))))))
   clojure.lang.Symbol
   (generate-code
    [exp cxt]
+   (println "Compiling:" exp)
    (if (contains? (set (:locals cxt)) exp)
      (access-local cxt exp)
      (resolve-var cxt (resolve exp))))
@@ -60,7 +80,7 @@
   (generate-code
    [exp cxt]
    (immediate cxt exp nil))
-  java.lang.Object
+  java.lang.String
   (generate-code
    [exp cxt]
    (immediate cxt exp nil)))
