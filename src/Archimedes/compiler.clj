@@ -25,7 +25,6 @@
   clojure.lang.ISeq
   (generate-code
    [expr cxt]
-   (println "Compiling:" expr)
    (let [cxt (dissoc cxt :do)
          oper (first expr)
          args (rest expr)]
@@ -61,7 +60,8 @@
                              :static true}))))
       (and (symbol? oper) ;boom, inlined!, using reflection :(
            (:inline (meta (resolve oper)))
-           ((:inline-arities (meta (resolve oper))) (count args)))
+           (or (= 1 (count args))
+               ((:inline-arities (meta (resolve oper))) (count args))))
       (recur (apply (:inline (meta (resolve oper))) args) cxt)
       :else
       (let [context (if (= 'in-ns oper)
@@ -76,7 +76,6 @@
   clojure.lang.Symbol
   (generate-code
    [exp cxt]
-   (println "Compiling:" exp)
    (if (contains? (set (:locals cxt)) exp)
      (access-local cxt exp)
      (resolve-var cxt
