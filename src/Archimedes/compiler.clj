@@ -21,6 +21,7 @@
   (generate-code [expr machine]))
 
 (extend-protocol Compilable
+
   clojure.lang.ISeq
   (generate-code
    [expr cxt]
@@ -29,6 +30,7 @@
          oper (first expr)
          args (rest expr)]
      (cond
+      ;;TODO: should be a multimethod
       (= 'def oper)
       (define cxt (first args) (second args))
       (= 'quote oper)
@@ -36,14 +38,17 @@
       (= 'fn* oper)
       (define-function cxt expr)
       (= 'do oper)
-      (generate-code (last args)
-                     (assoc cxt
-                       :namespace (:namespace
-                                   (reduce
-                                    #(generate-code %2 %)
-                                    (assoc cxt :do true)
-                                    (butlast args)))))
+      (let [machine (dissoc
+                     (reduce
+                      #(generate-code %2 %)
+                      (assoc cxt :do true)
+                      (butlast args))
+                     :do)]
+        (generate-code (last args) machine))
       (= '. oper)
+      ;;TODO: static/instance method dichotomy is a feature of the
+      ;;jvm, so most of this logic should live inside the
+      ;;implementation of the Machine protocol
       (let [[_ klass-or-object method & args] expr
             [method args] (if (seq? method)
                             [(first method) (rest method)]
@@ -54,32 +59,38 @@
                                          (name method))
                             {:argc (count args)
                              :static true}))))
-      (and (symbol? oper)
+      (and (symbol? oper) ;boom, inlined!, using reflection :(
            (:inline (meta (resolve oper)))
            ((:inline-arities (meta (resolve oper))) (count args)))
       (recur (apply (:inline (meta (resolve oper))) args) cxt)
       :else
-      (let [context (dissoc (generate-code (first expr)
-                                           (assoc cxt :fn-call true))
+      (let [context (if (= 'in-ns oper)
+                      (start-namespace cxt (last (first args)))
+                      cxt)
+            context (dissoc (generate-code oper
+                                           (assoc context :fn-call true))
                             :fn-call)
-            context (reduce #(generate-code %2 %) context args)
-            context (if (= 'in-ns oper)
-                      (do
-                        (start-namespace context (last (first args)))
-                        (assoc context :namespace (last (first args))))
-                      context)]
+            context (reduce #(generate-code %2 %) context args)]
         (function-call context (count args))))))
+
   clojure.lang.Symbol
   (generate-code
    [exp cxt]
    (println "Compiling:" exp)
    (if (contains? (set (:locals cxt)) exp)
      (access-local cxt exp)
-     (resolve-var cxt (resolve exp))))
+     (resolve-var cxt
+                  (or (ns-resolve ;a lot of this logic should be moved
+                                  ;into the machine to I think
+                       (create-ns
+                        (:namespace cxt (.getName *ns*))) exp)
+                      (ns-resolve 'clojure.core exp)))))
+
   java.lang.Number
   (generate-code
    [exp cxt]
    (immediate cxt exp nil))
+
   java.lang.String
   (generate-code
    [exp cxt]
