@@ -1,6 +1,7 @@
 (ns Archimedes.compiler.jvm
   (:use [Archimedes.compiler]
-        [clojure.java.io :only [copy file]])
+        [clojure.java.io :only [copy file]]
+        [clojure.contrib.logging :only [info]])
   (:import [clojure.asm ClassWriter Type]
            [java.io ByteArrayOutputStream]
            [java.util.jar JarOutputStream]
@@ -34,6 +35,12 @@
                       owner
                       method
                       (method-desciptor (map #(types % %) arg-types)))))
+
+(defn load-var [method-writer]
+  (method-call method-writer
+               (op INVOKESTATIC)
+               :clojure.lang.RT/var
+               [:str :str :var]))
 
 (defn object-array [method-writer size]
   (.visitLdcInsn method-writer size)
@@ -71,6 +78,7 @@
 
   (init
    [machine values]
+   (info "Init machine.")
    ;;initialize machine
    (.visit class-writer
            (op V1_5)
@@ -93,6 +101,7 @@
 
   (start-procedure
    [machine name attrs]
+   (info (format "End proc: %s" name))
    ;;start a primitive (non-closure) procedure
    (let [method-writer (.visitMethod class-writer
                                      (:access attrs)
@@ -111,6 +120,7 @@
 
   (end-procedure
    [machine]
+   (info "End proc")
    ;;end the definition of a primitive procedure
    (.visitMaxs method-writer 0 0)
    (.visitEnd method-writer)
@@ -118,6 +128,7 @@
 
   (procedure-call
    [machine a-name args]
+   (info (format "Proc call: %s" a-name))
    ;;call a primitive procedure
    ;;TODO: non-reflective calls
    ;;TODO: non-static calls
@@ -202,6 +213,7 @@
 
   (function-call
    [machine args]
+   (info "Call function")
    ;;invoke a clojure function object
    (method-call method-writer
                 (op INVOKEINTERFACE)
@@ -215,18 +227,41 @@
 
   (resolve-var
    [machine var]
+   (info (format "Resolve var: %s" var))
    ;;TODO: how to do this without running code
+   ;;TODO: need some way to write static methods for function classes
+   (if (:vars machine)
+     (do
+       (when-not (contains? @(:vars machine) var)
+         (swap! (:vars machine) assoc var (name (gensym (.sym var))))
+         (.visitField class-writer
+                      (+ (op ACC_PUBLIC)
+                         (op ACC_STATIC))
+                      (@(:vars machine) var)
+                      (.getDescriptor (Type/getType clojure.lang.Var))
+                      nil
+                      nil)
+         (doto (:static-block machine)
+           (.visitLdcInsn (name (.getName (.ns var))))
+           (.visitLdcInsn (name (.sym var)))
+           (load-var)
+           (.visitFieldInsn
+            (op PUTSTATIC)
+            (.getInternalName (:class machine))
+            (@(:vars machine) var)
+            (.getDescriptor (Type/getType clojure.lang.Var)))))
+       (.visitFieldInsn method-writer
+                        (op GETSTATIC)
+                        (.getInternalName (:class machine))
+                        (@(:vars machine) var)
+                        (.getDescriptor (Type/getType clojure.lang.Var))))
+     (doto method-writer
+       (.visitLdcInsn (name (.getName (.ns var))))
+       (.visitLdcInsn (name (.sym var)))
+       (load-var)))
    (doto method-writer
-     (.visitLdcInsn (name (.getName (.ns var))))
-     (.visitLdcInsn (name (.sym var)))
      (method-call
-      (op INVOKESTATIC)
-      :clojure.lang.RT/var
-      [:str :str :var])
-     (method-call
-      (op INVOKEINTERFACE)
-      :clojure.lang.IDeref/deref
-      [:obj]))
+      (op INVOKEINTERFACE) :clojure.lang.IDeref/deref [:obj]))
    (if (:fn-call machine)
      (do
        (.visitTypeInsn method-writer (op CHECKCAST) "clojure/lang/IFn")
@@ -235,6 +270,7 @@
 
   (access-local
    [machine local]
+   (info (format "Access local: %s" local))
    ;;access a local value
    (let [[idx _] (first (filter #(= local (second %))
                                 (map-indexed vector (:locals machine))))]
@@ -243,6 +279,7 @@
 
   (immediate
    [machine value attrs]
+   (info (format "Immediate: %s" value))
    ;;load a literal value
    (let [machine (cond
                   (instance? Integer value)
@@ -282,6 +319,7 @@
        machine)))
 
   (define-function [machine expr]
+    (info (format "Define function: %s" expr))
     (let [[_ [args & body]] expr]
       (let [class-name (format "%s$%s"
                                (:namespace machine (.getName *ns*))
@@ -291,15 +329,28 @@
                                 :fn-call false
                                 :do false
                                 :class-writer
-                                (ClassWriter. ClassWriter/COMPUTE_FRAMES))
+                                (ClassWriter. ClassWriter/COMPUTE_FRAMES)
+                                :vars (atom {})
+                                :class (Type/getType
+                                        (format "L%s;"
+                                                (.replaceAll class-name
+                                                             "\\."
+                                                             "/"))))
                           (init {:name class-description
                                  :super "clojure/lang/AFn"}))
             new-machine (assoc new-machine
                           :locals args
                           :jaros (:jaros machine)
                           :baos (:baoas machine)
-                          :in-function true)
-
+                          :in-function true
+                          :static-block (.visitMethod
+                                         (:class-writer new-machine)
+                                         (op ACC_STATIC)
+                                         "<clinit>"
+                                         (method-desciptor
+                                          [(type-of machine :void)])
+                                         nil
+                                         nil))
             new-machine (start-procedure new-machine "invoke"
                                          {:method-descriptor
                                           (vec
@@ -312,6 +363,9 @@
             new-machine (end-procedure new-machine)
             file-name (format "%s.class" class-description)]
         (when-not (:ctor machine) (default-ctor new-machine))
+        (.visitInsn (:static-block new-machine) (op RETURN))
+        (.visitMaxs (:static-block new-machine) 0 0)
+        (.visitEnd (:static-block new-machine))
         (.visitEnd (:class-writer new-machine))
         (.putNextEntry (:jaros machine) (ZipEntry. file-name))
         (copy (.toByteArray (:class-writer new-machine))
@@ -327,6 +381,7 @@
 
   (fin
    [machine values]
+   (info "Fin")
    (when-not (:ctor machine) (default-ctor machine))
    (.visitEnd class-writer)
    (doseq [[a-name [class-writer method-writer]] @(:namespaces machine)]
@@ -345,6 +400,7 @@
 
   (start-namespace
    [machine namespace]
+   (info (format "Namespace: %s" namespace))
    (when-not (contains? @namespaces namespace)
      (let [class-writer (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
                           (.visit (op V1_5)
@@ -363,6 +419,13 @@
                                         [(type-of machine :void)])
                                        nil
                                        nil)]
+       (.visitField class-writer
+                    (+ (op ACC_PUBLIC)
+                       (op ACC_STATIC))
+                    "namespace"
+                    (.getDescriptor (Type/getType clojure.lang.Namespace))
+                    nil
+                    nil)
        (.visitInsn method-writer (op ACONST_NULL))
        ;;TODO: static field with namespace object in it
        ;;TODO: push/pop bindings for *ns*
@@ -374,15 +437,26 @@
          (method-call (op INVOKESTATIC)
                       :clojure.lang.Namespace/findOrCreate
                       [:symbol :namespace]))
-       (.visitInsn method-writer (op POP))
+       (.visitFieldInsn method-writer
+                        (op PUTSTATIC)
+                        (.getInternalName
+                         (Type/getType (format "L%s__init;"
+                                               (.replaceAll (name namespace)
+                                                            "\\." "/"))))
+                        "namespace"
+                        (.getDescriptor (Type/getType clojure.lang.Namespace)))
        (swap! namespaces assoc namespace [class-writer method-writer])))
    (assoc machine
      :foo :bar
      :namespace namespace
+     :class (Type/getType (format "L%s__init;"
+                                  (.replaceAll (name namespace)
+                                               "\\." "/")))
      :class-writer (first (get @namespaces namespace))
      :method-writer (second (get @namespaces namespace))))
 
   (define [machine a-name value]
+    (info (format "define: %s %s" a-name value))
     (let [ns (:namespace machine)
           [cw mw] (ns @namespaces)
           new-machine (assoc machine
@@ -400,9 +474,7 @@
       (doto method-writer
         (.visitLdcInsn (name ns))
         (.visitLdcInsn (name a-name))
-        (method-call (op INVOKESTATIC)
-                     :clojure.lang.RT/var
-                     [:str :str :var]))
+        (load-var))
       (clojure.lang.RT/var (name ns) (name a-name) (PlaceHolder. value))
       (update-in machine [:variable-stack] conj (type-of machine :var)))))
 
@@ -410,7 +482,8 @@
   (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil (atom {})))
 
 (defn g []
-  ;;classwriter should be created by the namespace
+  (info "Starting compiling")
+  ;;CLASSWRITER should be created by the namespace
   (let [class-name "Archimedes/one"
         machine (jvm)
         machine (init machine {:name class-name :super "clojure/lang/AFn"})
@@ -418,7 +491,8 @@
                                  {:method-descriptor [(type-of machine :obj)]
                                   :access (op ACC_PUBLIC)})
         machine (generate-code '(do (in-ns 'a.b)
-                                    (println (+ (int 1) (int 2))))
+                                    (def f (fn* ([x] (println x))))
+                                    (f 1))
                                machine)
         #_(generate-code '(do (in-ns 'a.b)
                               (println ((fn* ([x] (+ x x))) 2)))
