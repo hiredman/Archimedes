@@ -4,7 +4,7 @@
         [clojure.contrib.logging :only [info]])
   (:import [clojure.asm ClassWriter Type]
            [java.io ByteArrayOutputStream]
-           [java.util.jar JarOutputStream]
+           [java.util.jar JarOutputStream JarInputStream]
            [java.util.zip ZipEntry]))
 
 (defmacro op [name]
@@ -36,6 +36,14 @@
                       method
                       (method-desciptor (map #(types % %) arg-types)))))
 
+(defn new-method [class-writer acc a-name desc]
+  (.visitMethod class-writer
+                acc
+                (name a-name)
+                (method-desciptor (map #(types % %) desc))
+                nil
+                nil))
+
 (defn load-var [method-writer]
   (method-call method-writer
                (op INVOKESTATIC)
@@ -54,19 +62,16 @@
       (.visitInsn (op AASTORE)))))
 
 (defn default-ctor [machine]
-  (let [method-writer (.visitMethod (:class-writer machine)
-                                    (op ACC_PUBLIC)
-                                    "<init>"
-                                    (method-desciptor [(type-of machine :void)])
-                                    nil
-                                    nil)]
+  (let [method-writer (new-method (:class-writer machine)
+                                  (op ACC_PUBLIC)
+                                  :<init>
+                                  [:void])]
     (.visitCode method-writer)
     (.visitVarInsn method-writer (op ALOAD) 0)
-    (.visitMethodInsn method-writer
-                      (op INVOKESPECIAL)
-                      (:super machine)
-                      "<init>"
-                      (method-desciptor [(type-of machine :void)]))
+    (method-call method-writer
+                 (op INVOKESPECIAL)
+                 (keyword (:super machine) "<init>")
+                 [(type-of machine :void)])
     (.visitInsn method-writer (op RETURN))
     (.visitMaxs method-writer 0 0)
     (.visitEnd method-writer)))
@@ -101,15 +106,12 @@
 
   (start-procedure
    [machine name attrs]
-   (info (format "End proc: %s" name))
+   (info (format "Start proc: %s" name))
    ;;start a primitive (non-closure) procedure
-   (let [method-writer (.visitMethod class-writer
-                                     (:access attrs)
-                                     name
-                                     (method-desciptor
-                                      (:method-descriptor attrs))
-                                     nil
-                                     nil)]
+   (let [method-writer (new-method class-writer
+                                   (:access attrs)
+                                   (keyword name)
+                                   (:method-descriptor attrs))]
      (.visitCode method-writer)
      (reduce into
              (assoc machine
@@ -264,6 +266,7 @@
       (op INVOKEINTERFACE) :clojure.lang.IDeref/deref [:obj]))
    (if (:fn-call machine)
      (do
+       (info "Cast to IFn")
        (.visitTypeInsn method-writer (op CHECKCAST) "clojure/lang/IFn")
        (update-in machine [:variable-stack] conj (:fn types)))
      (update-in machine [:variable-stack] conj (:obj types))))
@@ -289,11 +292,9 @@
                       (.visitTypeInsn (op NEW) "java/lang/Integer")
                       (.visitInsn (op DUP_X1))
                       (.visitInsn (op SWAP))
-                      (.visitMethodInsn
-                       (op INVOKESPECIAL)
-                       "java/lang/Integer"
-                       "<init>"
-                       (method-desciptor [Type/INT_TYPE (:void types)])))
+                      (method-call (op INVOKESPECIAL)
+                                   :java.lang.Integer/<init>
+                                   [Type/INT_TYPE :void]))
                     (update-in machine [:variable-stack] conj
                                (type-of machine :int)))
                   (instance? String value)
@@ -412,13 +413,8 @@
                                   nil
                                   "java/lang/Object"
                                   nil))
-           method-writer (.visitMethod class-writer
-                                       (op ACC_STATIC)
-                                       "<clinit>"
-                                       (method-desciptor
-                                        [(type-of machine :void)])
-                                       nil
-                                       nil)]
+           method-writer (new-method
+                          class-writer (op ACC_STATIC) :<clinit> [:void])]
        (.visitField class-writer
                     (+ (op ACC_PUBLIC)
                        (op ACC_STATIC))
@@ -455,7 +451,8 @@
      :class-writer (first (get @namespaces namespace))
      :method-writer (second (get @namespaces namespace))))
 
-  (define [machine a-name value]
+  (define
+    [machine a-name value]
     (info (format "define: %s %s" a-name value))
     (let [ns (:namespace machine)
           [cw mw] (ns @namespaces)
@@ -476,7 +473,12 @@
         (.visitLdcInsn (name a-name))
         (load-var))
       (clojure.lang.RT/var (name ns) (name a-name) (PlaceHolder. value))
-      (update-in machine [:variable-stack] conj (type-of machine :var)))))
+      (update-in machine [:variable-stack] conj (type-of machine :var))))
+
+  (produce
+   [machine args]
+   (.close (:jaros machine))
+   (.toByteArray (:baos machine))))
 
 (defn jvm []
   (JVM. types (ClassWriter. ClassWriter/COMPUTE_FRAMES) nil (atom {})))
@@ -505,7 +507,32 @@
     (copy (.toByteArray (:class-writer machine))
           (:jaros machine))
     (.closeEntry (:jaros machine))
-    (.close (:jaros machine))
-    (copy (.toByteArray (:baos machine))
-          (file "/tmp/a.jar"))
-    (.toByteArray (:baos machine))))
+    (doto (produce machine nil)
+      (copy (file "/tmp/a.jar")))))
+
+(defn seek-to-entry [jar-is name]
+  (loop [m (.getNextEntry jar-is)]
+    (if (or (nil? m) (= name (.getName m)))
+      m
+      (recur (.getNextEntry jar-is)))))
+
+(defn get-entry [bytes name]
+  (with-open [jar-is (JarInputStream. (java.io.ByteArrayInputStream. bytes))
+              baos (ByteArrayOutputStream.)]
+    (when-let [e (seek-to-entry jar-is name)]
+      (copy jar-is baos)
+      (.toByteArray baos))))
+
+(defn get-class [bytes name]
+  (let [name (format "%s.class" (.replaceAll name "\\." "/"))]
+    (get-entry bytes name)))
+
+(defn list-classes [bytes]
+  (with-open [jar-is (JarInputStream. (java.io.ByteArrayInputStream. bytes))]
+    (doall (map
+            (fn [entry] (-> (.getName entry)
+                            (.replaceAll "\\.class$" "")
+                            (.replaceAll "/" ".")))
+            (filter
+             #(.endsWith (.getName %) ".class")
+             (take-while identity (repeatedly #(.getNextEntry jar-is))))))))

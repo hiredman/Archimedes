@@ -5,6 +5,7 @@
 (defprotocol Machine
   (init [machine values])
   (fin [machine values])
+  (produce [machine args] "get the final product of the machine")
   (type-of [machine name] "abstract clojure type => machine type")
   (start-procedure [machine name attrs] "start a primitive proc")
   (end-procedure [machine] "end primitive proc")
