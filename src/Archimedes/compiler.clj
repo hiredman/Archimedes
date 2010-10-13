@@ -44,7 +44,8 @@
   (resolve-var [machine var] "resolve clojure var")
   (access-local [machine local])
   (immediate [machine value attrs])
-  (define-function [machine attrs])
+  (start-function [machine attrs])
+  (end-function [machine attrs])
   (start-namespace [machine namespace])
   (refer-to [machine namespace])
   (define [machine name value]))
@@ -59,6 +60,7 @@
   (compile [sexp machine]
     (let [op (first sexp)
           args (rest sexp)]
+      (println "@compile" op args)
       (cond
        (= 'in-ns op)
        (start-namespace machine (second (first args)))
@@ -66,6 +68,9 @@
        (refer-to machine (second (first args)))
        (= 'def op)
        (define machine (first args) (second args))
+       (= 'fn* op)
+       (let [[[arg-list & body]] args]
+         (define-function machine arg-list))
        :else
        (in state-m
          (update-state conj :fn-call)

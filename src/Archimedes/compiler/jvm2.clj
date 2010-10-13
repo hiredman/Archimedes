@@ -50,19 +50,13 @@
 
 
 
-(defrecord Init [machine values])
-(defrecord Fin [machine values])
-(defrecord Produce [machine args])
-(defrecord StartProcedure [machine name attrs])
 (defrecord EndProcedure [machine])
 (defrecord ProcedureCall [machine name args])
-(defrecord FunctionCall [machine args])
-(defrecord ResolveVar [machine var])
 (defrecord AccessLocal [machine local])
-(defrecord Immediate [machine value attrs])
 (defrecord DefineFunction [machine attrs])
-(defrecord StartNamespace [machine namespace])
-(defrecord Define [machine name value])
+(defrecord Locals [arglist])
+
+(defrecord Scope [name])
 
 (defrecord Namespace [name mappings aliases])
 
@@ -76,7 +70,8 @@
 (defn current-classwriter [stack]
   (:cw (first (filter #(= CWriter (type %)) (reverse stack)))))
 
-
+(defn current-scope [stack]
+  (first (filter #(= Scope (type %)) (reverse stack))))
 
 (defn namespace-classwriter [namespace-symbol]
   (let [class-name (format "%s__init"
@@ -112,11 +107,13 @@
       (return method-writer)) :as method-writer
       (update-state conj method-writer)))
 
-(defrecord JVM []
+(defrecord JVM [jaros baos]
   Machine
+
   (init [machine values]
     (in state-m
       (update-state conj (Init. machine values))))
+
   (fin [machine values]
     (in state-m
       (fetch-state) :as state
@@ -145,12 +142,12 @@
           []
           new-state)) :as new-state
           (update-state (constantly new-state))))
+  
   (produce [machine args]
     (in state-m
       (fetch-state) :as state
       (return
-       (with-open [baos (ByteArrayOutputStream.)
-                   jaros (JarOutputStream. baos)]
+       (do
          (reduce
           (fn [jaros thing]
             (when (= CWriter (type thing))
@@ -161,9 +158,11 @@
           jaros
           state)
          (.close jaros)
+         (.close baos)
          (.toByteArray baos)))))
 
   (type-of [machine name] :x)
+
   (start-procedure [machine name attrs]
     (in state-m
       (update-state conj (StartProcedure. machine name attrs))))
@@ -189,6 +188,8 @@
       (return :Object)))
 
   (resolve-var [machine var]
+    (when-not (symbol? var)
+      (throw (Exception. "not a symbol")))
     (in state-m
       (fetch-state) :as stack
       (return (current-namespace stack)) :as ns
@@ -240,14 +241,23 @@
         (return :String)
         (return :String))))
 
-  (define-function [machine attrs]
+  (start-function [machine args]
     (in state-m
-      (update-state conj (DefineFunction. machine attrs))))
+      (fetch-state) :as stack
+      (return (current-scope stack)) :as scope
+      (return (format "%s$fn" (:name scope))) :as fn-name
+      (update-state conj (Scope. fn-name))
+      (update-state conj (Locals. args))
+      (update-state conj (DefineFunction. machine args))))
+
+  (end-function [machine args]
+    (in state-m
+      (return nil)))
 
   (start-namespace [machine namespace]
     (let [ns (Namespace. namespace (atom {}) (atom {}))]
       (in state-m
-        (update-state conj (namespace-classwriter namespace) ns)
+        (update-state conj (namespace-classwriter namespace) ns (Scope. (name namespace)))
         (static-init)
         (return ns))))
 
@@ -286,22 +296,25 @@
 
 
 (defn jvm []
-  (JVM.))
+  (let [baos (ByteArrayOutputStream.)
+        jaros (JarOutputStream. baos)]
+    (JVM. jaros baos)))
 
 (comment
 
-  (let [[bytes _] ((in state-m
+  (let [jvm (jvm)
+        [bytes _] ((in state-m
                      (reduce
                       (fn [m form]
-                        (bind m (fn [_] (compile form (jvm)))))
+                        (bind m (fn [_] (compile form jvm))))
                       (return nil)
                       '[(in-ns 'foo.bar)
                         (refer 'clojure.core)
                         (def x 1)
-                        (def f (fn [x] x))
+                        (def f (fn* ([x] x)))
                         (println (f x))])
-                     (fin (jvm) nil)
-                     (produce (jvm) nil) :as x
+                     (fin jvm nil)
+                     (produce jvm nil) :as x
                      (return x))
                    [])]
     (copy bytes (file "/tmp/foo.jar")))
