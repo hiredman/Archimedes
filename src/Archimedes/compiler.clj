@@ -54,7 +54,6 @@
 
   clojure.lang.ISeq
   (compile [sexp machine]
-    (println "@compile")
     (let [op (first sexp)
           args (rest sexp)]
       (cond

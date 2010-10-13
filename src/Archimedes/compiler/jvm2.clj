@@ -244,16 +244,17 @@
 
 (comment
 
-  ((in state-m
-     (reduce
-      (fn [m form]
-        (bind m (fn [_] (compile form (jvm)))))
-      (return nil)
-      '[(in-ns 'foo.bar)
-        (def x 1)])
-     (fin (jvm) nil)
-     (produce (jvm) nil) :as x
-     (return x))
-   [])
+  (let [[bytes _] ((in state-m
+                     (reduce
+                      (fn [m form]
+                        (bind m (fn [_] (compile form (jvm)))))
+                      (return nil)
+             '[(in-ns 'foo.bar)
+               (def x 1)])
+                     (fin (jvm) nil)
+                     (produce (jvm) nil) :as x
+                     (return x))
+                   [])]
+    (copy bytes (file "/tmp/foo.jar")))
 
   )
