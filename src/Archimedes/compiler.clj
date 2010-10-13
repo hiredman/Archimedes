@@ -1,7 +1,7 @@
 (ns Archimedes.compiler
   (:refer-clojure :exclude [compile])
   (:use [clojure.java.io :only [copy file]]
-        [clojure.contrib.monads :only [state-m]])
+        [clojure.contrib.monads :only [state-m fetch-state]])
   (:import [clojure.asm ClassWriter Type]))
 
 (defmacro inner-with-monad [init & more]
@@ -9,9 +9,11 @@
     (let [[binder name next & xs] more
           [binder name next xs] (if (= :as binder)
                                   [binder name next xs]
-                                  [:as '_ binder (if (and next name)
-                                                   (conj xs next name)
-                                                   xs)])]
+                                  [:as '_ binder (reduce
+                                                  (fn [xs x]
+                                                    (if x (conj xs x) xs))
+                                                  xs
+                                                  [next name])])]
       `(~'bind ~init
                (fn [~name]
                  (inner-with-monad ~next ~@xs))))
@@ -44,6 +46,7 @@
   (immediate [machine value attrs])
   (define-function [machine attrs])
   (start-namespace [machine namespace])
+  (refer-to [machine namespace])
   (define [machine name value]))
 
 (defprotocol Compilable
@@ -59,8 +62,21 @@
       (cond
        (= 'in-ns op)
        (start-namespace machine (second (first args)))
+       (= 'refer op)
+       (refer-to machine (second (first args)))
        (= 'def op)
-       (define machine (first args) (second args)))))
+       (define machine (first args) (second args))
+       :else
+       (in state-m
+         (update-state conj :fn-call)
+         (reduce
+          (fn [m args]
+            (in state-m
+              m
+              (compile args machine)))
+          (compile op machine)
+          args)
+         (function-call machine (count args))))))
 
   Number
   (compile [number machine]
@@ -68,4 +84,9 @@
 
   java.lang.String
   (compile [string machine]
-    (immediate machine string nil)))
+    (immediate machine string nil))
+
+  clojure.lang.Symbol
+  (compile [symbol machine]
+    (resolve-var machine symbol)))
+

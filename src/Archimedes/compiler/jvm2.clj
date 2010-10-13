@@ -66,6 +66,8 @@
 
 (defrecord Namespace [name mappings aliases])
 
+(defrecord Var [namespace name])
+
 (defrecord CWriter [cw class-name])
 
 (defn current-namespace [stack]
@@ -89,6 +91,13 @@
                         "java/lang/Object"
                         nil))
               (.replaceAll class-name "/" "."))))
+
+(defn method-call [op owner name desc]
+  (in state-m
+    (fetch-state) :as stack
+    (return (current-methodwriter stack)) :as method-writer
+    (return (doto method-writer
+              (.visitMethodInsn op owner name desc)))))
 
 (defn static-init []
   (in state-m
@@ -169,11 +178,40 @@
 
   (function-call [machine args]
     (in state-m
-      (update-state conj (FunctionCall. machine args))))
+      (fetch-state) :as stack
+      (return (current-methodwriter stack)) :as method-writer
+      (case args
+            1
+            (method-call (op INVOKEINTERFACE)
+                         "clojure/lang/IFn"
+                         "invoke"
+                         "(Ljava/lang/Object;)Ljava/lang/Object;"))
+      (return :Object)))
 
   (resolve-var [machine var]
     (in state-m
-      (update-state conj (ResolveVar. machine var))))
+      (fetch-state) :as stack
+      (return (current-namespace stack)) :as ns
+      (return (@(:mappings ns) var)) :as var
+      (compile (:namespace var) machine)
+      (compile (:name var) machine)
+      (method-call (op INVOKESTATIC)
+                   "clojure/lang/RT"
+                   "var"
+                   (str "(Ljava/lang/String;"
+                        "Ljava/lang/String;)"
+                        "Lclojure/lang/Var;"))
+      (method-call (op INVOKEINTERFACE)
+                   "clojure/lang/IDeref"
+                   "deref"
+                   "()Ljava/lang/Object;")
+      (if (= :fn-call (peek stack))
+        (in state-m
+          (return (doto (current-methodwriter stack)
+                    (.visitTypeInsn (op CHECKCAST) "clojure/lang/IFn")))
+          (update-state pop)
+          (return :Fn))
+        (return :Object))))
 
   (access-local [machine local]
     (in state-m
@@ -205,37 +243,45 @@
   (define-function [machine attrs]
     (in state-m
       (update-state conj (DefineFunction. machine attrs))))
-  
+
   (start-namespace [machine namespace]
-    (let [ns (Namespace. namespace (atom #{}) (atom {}))]
+    (let [ns (Namespace. namespace (atom {}) (atom {}))]
       (in state-m
-        (update-state conj (namespace-classwriter namespace))
-        (update-state conj ns)
+        (update-state conj (namespace-classwriter namespace) ns)
         (static-init)
         (return ns))))
-  
+
+  (refer-to [machine namespace]
+    (in state-m
+      (fetch-state) :as stack
+      (return (current-namespace stack)) :as ns
+      (return
+       (update-in ns [:mappings] swap! into (map (fn [[n v]] [n (Var. (name (.getName (.ns v))) (name (.sym v)))]) (ns-publics (create-ns namespace)))))
+      (return nil)))
+
   (define [machine name value]
     (in state-m
       (fetch-state) :as stack
       (return (current-namespace stack)) :as ns
+      ;;need the namespace and symbol
       (compile (str (:name ns)) machine)
       (compile (clojure.core/name name) machine)
       (compile value machine) :as type
+      ;;box it if it's primitive, vars hold objects
       (if (primitive? type)
         (box type)
         (return type))
       (return
-       (update-in ns [:mappings] swap! conj (vary-meta name update-in [:tag] (fn [tag] (if tag tag type)))))
+       (update-in ns [:mappings] swap! assoc (vary-meta name update-in [:tag] (fn [tag] (if tag tag type))) (Var. (str (:name ns)) (clojure.core/name name))))
       (fetch-state) :as state
       (return (current-methodwriter stack)) :as method-writer
-      (return (doto method-writer
-                (.visitMethodInsn (op INVOKESTATIC)
-                                  "clojure/lang/RT"
-                                  "var"
-                                  (str "(Ljava/lang/String;"
-                                       "Ljava/lang/String;"
-                                       "Ljava/lang/Object;)"
-                                       "Lclojure/lang/Var;"))))
+      (method-call (op INVOKESTATIC)
+                   "clojure/lang/RT"
+                   "var"
+                   (str "(Ljava/lang/String;"
+                        "Ljava/lang/String;"
+                        "Ljava/lang/Object;)"
+                        "Lclojure/lang/Var;"))
       (return :Var))))
 
 
@@ -249,8 +295,11 @@
                       (fn [m form]
                         (bind m (fn [_] (compile form (jvm)))))
                       (return nil)
-             '[(in-ns 'foo.bar)
-               (def x 1)])
+                      '[(in-ns 'foo.bar)
+                        (refer 'clojure.core)
+                        (def x 1)
+                        (def f (fn [x] x))
+                        (println (f x))])
                      (fin (jvm) nil)
                      (produce (jvm) nil) :as x
                      (return x))
