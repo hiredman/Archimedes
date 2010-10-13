@@ -1,7 +1,35 @@
 (ns Archimedes.compiler
-  (:use [clojure.java.io :only [copy file]])
+  (:refer-clojure :exclude [compile])
+  (:use [clojure.java.io :only [copy file]]
+        [clojure.contrib.monads :only [state-m]])
   (:import [clojure.asm ClassWriter Type]))
 
+(defmacro inner-with-monad [init & more]
+  (if (seq more)
+    (let [[binder name next & xs] more
+          [binder name next xs] (if (= :as binder)
+                                  [binder name next xs]
+                                  [:as '_ binder (if (and next name)
+                                                   (conj xs next name)
+                                                   xs)])]
+      `(~'bind ~init
+               (fn [~name]
+                 (inner-with-monad ~next ~@xs))))
+    init))
+
+(defmacro in [monad & more]
+  `(let [name#      ~monad
+         ~'bind   (:m-bind name#)
+         ~'return (:m-result name#)
+         ~'m-zero   (:m-zero name#)
+         ~'m-plus   (:m-plus name#)]
+     (inner-with-monad ~@more)))
+
+(defn update-state [f & args]
+  (fn [state]
+    [state (apply f state args)]))
+
+;;TODO: rewrite Marchine to live inside state-m
 (defprotocol Machine
   (init [machine values])
   (fin [machine values])
@@ -19,79 +47,26 @@
   (define [machine name value]))
 
 (defprotocol Compilable
-  (generate-code [expr machine]))
+  (compile [expr machine]))
 
-(extend-protocol Compilable
+(extend-protocol
+    Compilable
 
   clojure.lang.ISeq
-  (generate-code
-   [expr cxt]
-   (let [cxt (dissoc cxt :do)
-         oper (first expr)
-         args (rest expr)]
-     (cond
-      ;;TODO: should be a multimethod
-      (= 'def oper)
-      (define cxt (first args) (second args))
-      (= 'quote oper)
-      (immediate cxt (first args) nil)
-      (= 'fn* oper)
-      (define-function cxt expr)
-      (= 'do oper)
-      (let [machine (dissoc
-                     (reduce
-                      #(generate-code %2 %)
-                      (assoc cxt :do true)
-                      (butlast args))
-                     :do)]
-        (generate-code (last args) machine))
-      (= '. oper)
-      ;;TODO: static/instance method dichotomy is a feature of the
-      ;;jvm, so most of this logic should live inside the
-      ;;implementation of the Machine protocol
-      (let [[_ klass-or-object method & args] expr
-            [method args] (if (seq? method)
-                            [(first method) (rest method)]
-                            [method args])]
-        (if (class? (resolve klass-or-object))
-          (let [cxt (reduce #(generate-code %2 %) cxt args)]
-            (procedure-call cxt (keyword (name klass-or-object)
-                                         (name method))
-                            {:argc (count args)
-                             :static true}))))
-      (and (symbol? oper) ;boom, inlined!, using reflection :(
-           (:inline (meta (resolve oper)))
-           (or (= 1 (count args))
-               ((:inline-arities (meta (resolve oper))) (count args))))
-      (recur (apply (:inline (meta (resolve oper))) args) cxt)
-      :else
-      (let [context (if (= 'in-ns oper)
-                      (start-namespace cxt (last (first args)))
-                      cxt)
-            context (dissoc (generate-code oper
-                                           (assoc context :fn-call true))
-                            :fn-call)
-            context (reduce #(generate-code %2 %) context args)]
-        (function-call context (count args))))))
+  (compile [sexp machine]
+    (println "@compile")
+    (let [op (first sexp)
+          args (rest sexp)]
+      (cond
+       (= 'in-ns op)
+       (start-namespace machine (second (first args)))
+       (= 'def op)
+       (define machine (first args) (second args)))))
 
-  clojure.lang.Symbol
-  (generate-code
-   [exp cxt]
-   (if (contains? (set (:locals cxt)) exp)
-     (access-local cxt exp)
-     (resolve-var cxt
-                  (or (ns-resolve ;a lot of this logic should be moved
-                                  ;into the machine to I think
-                       (create-ns
-                        (:namespace cxt (.getName *ns*))) exp)
-                      (ns-resolve 'clojure.core exp)))))
-
-  java.lang.Number
-  (generate-code
-   [exp cxt]
-   (immediate cxt exp nil))
+  Number
+  (compile [number machine]
+    (immediate machine number nil))
 
   java.lang.String
-  (generate-code
-   [exp cxt]
-   (immediate cxt exp nil)))
+  (compile [string machine]
+    (immediate machine string nil)))
