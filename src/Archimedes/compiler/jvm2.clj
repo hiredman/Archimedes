@@ -70,6 +70,9 @@
 (defn current-classwriter [stack]
   (:cw (first (filter #(= CWriter (type %)) (reverse stack)))))
 
+(defn current-class-name [stack]
+  (:class-name (first (filter #(= CWriter (type %)) (reverse stack)))))
+
 (defn current-scope [stack]
   (first (filter #(= Scope (type %)) (reverse stack))))
 
@@ -87,12 +90,50 @@
                         nil))
               (.replaceAll class-name "/" "."))))
 
+(defn function-classwriter [class-name]
+  (let [class-name (.replaceAll class-name
+                                "\\." "/")]
+    (CWriter. (doto (ClassWriter. ClassWriter/COMPUTE_FRAMES)
+                (.visit (op V1_5)
+                        (+ (op ACC_PUBLIC)
+                           (op ACC_FINAL))
+                        class-name
+                        nil
+                        "clojure/lang/AFn"
+                        nil))
+              (.replaceAll class-name "/" "."))))
+
 (defn method-call [op owner name desc]
   (in state-m
     (fetch-state) :as stack
     (return (current-methodwriter stack)) :as method-writer
     (return (doto method-writer
               (.visitMethodInsn op owner name desc)))))
+
+(defn default-ctor [class-desc]
+  (in state-m
+    (fetch-state) :as stack
+    (return (current-classwriter stack)) :as class-writer
+    (let [method-writer (.visitMethod class-writer
+                                      (op ACC_PUBLIC)
+                                      "<init>"
+                                      "()V"
+                                      nil
+                                      nil)]
+      (return method-writer)) :as method-writer
+      (update-state conj method-writer)
+      (return (doto method-writer
+                (.visitIntInsn (op ALOAD) 0)))
+      (method-call (op INVOKESPECIAL)
+                   class-desc
+                   "<init>"
+                   "()V")
+      (update-state pop)
+      (return (doto method-writer
+                (.visitInsn (op RETURN))
+                (.visitMaxs 0 0)
+                (.visitEnd)))
+      (return nil)))
 
 (defn static-init []
   (in state-m
@@ -106,6 +147,20 @@
                                       nil)]
       (return method-writer)) :as method-writer
       (update-state conj method-writer)))
+
+(defn function-methodwriter [argc]
+  (in state-m
+    (fetch-state) :as stack
+    (return (current-classwriter stack)) :as class-writer
+    (return (case argc
+                  1
+                  (.visitMethod class-writer
+                                (op ACC_PUBLIC)
+                                "invoke"
+                                "(Ljava/lang/Object;)Ljava/lang/Object;"
+                                nil
+                                nil))) :as method-writer
+                                (update-state conj method-writer)))
 
 (defrecord JVM [jaros baos]
   Machine
@@ -142,7 +197,7 @@
           []
           new-state)) :as new-state
           (update-state (constantly new-state))))
-  
+
   (produce [machine args]
     (in state-m
       (fetch-state) :as state
@@ -245,13 +300,46 @@
     (in state-m
       (fetch-state) :as stack
       (return (current-scope stack)) :as scope
-      (return (format "%s$fn" (:name scope))) :as fn-name
-      (update-state conj (Scope. fn-name))
-      (update-state conj (Locals. args))
-      (update-state conj (DefineFunction. machine args))))
+      (return (format "%s$%s" (:name scope) (gensym 'fn))) :as fn-name
+      (update-state conj
+                    (function-classwriter fn-name)
+                    (Scope. fn-name)
+                    (Locals. args))
+      (function-methodwriter (count args))
+      (fetch-state) :as stack
+      (return (current-methodwriter stack)) :as method-writer
+      (return (doto method-writer
+                (.visitIntInsn (op ALOAD) 1)))))
 
   (end-function [machine args]
     (in state-m
+      (fetch-state) :as stack
+      (return (current-methodwriter stack)) :as method-writer
+      (return (doto method-writer
+                (.visitInsn (op ARETURN))
+                (.visitMaxs 0 0)
+                (.visitEnd)))
+      (default-ctor "clojure/lang/AFn")
+      (return (current-classwriter stack)) :as class-writer
+      (return (doto class-writer
+                (.visitEnd)))
+      (return (current-class-name stack)) :as fn-class-name
+      (return (do (.putNextEntry jaros (ZipEntry. (format "%s.class" (.replaceAll fn-class-name "\\." "/"))))
+                  (copy (.toByteArray class-writer) jaros)
+                  (.closeEntry jaros)))
+      (update-state pop) ;method writer
+      (update-state pop) ;locals
+      (update-state pop) ;scope
+      (update-state pop) ;classwriter
+      (fetch-state) :as stack
+      (return (current-methodwriter stack)) :as method-writer
+      (return (doto method-writer
+                (.visitTypeInsn (op NEW) (.replaceAll fn-class-name "\\." "/"))
+                (.visitInsn (op DUP))))
+      (method-call (op INVOKESPECIAL)
+                   (.replaceAll fn-class-name "\\." "/")
+                   "<init>"
+                   "()V")
       (return nil)))
 
   (start-namespace [machine namespace]

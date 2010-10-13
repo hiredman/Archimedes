@@ -60,7 +60,6 @@
   (compile [sexp machine]
     (let [op (first sexp)
           args (rest sexp)]
-      (println "@compile" op args)
       (cond
        (= 'in-ns op)
        (start-namespace machine (second (first args)))
@@ -70,7 +69,9 @@
        (define machine (first args) (second args))
        (= 'fn* op)
        (let [[[arg-list & body]] args]
-         (define-function machine arg-list))
+         (in state-m
+           (start-function machine arg-list)
+           (end-function machine nil)))
        :else
        (in state-m
          (update-state conj :fn-call)
