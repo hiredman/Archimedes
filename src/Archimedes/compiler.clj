@@ -1,7 +1,8 @@
 (ns Archimedes.compiler
   (:refer-clojure :exclude [compile])
   (:use [clojure.java.io :only [copy file]]
-        [clojure.contrib.monads :only [state-m fetch-state]])
+        [clojure.contrib.monads :only [state-m fetch-state]]
+        [clojure.contrib.logging :only [info]])
   (:import [clojure.asm ClassWriter Type]))
 
 (defmacro inner-with-monad [init & more]
@@ -48,7 +49,8 @@
   (end-function [machine attrs])
   (start-namespace [machine namespace])
   (refer-to [machine namespace])
-  (define [machine name value]))
+  (define [machine name value])
+  (local? [machine name]))
 
 (defprotocol Compilable
   (compile [expr machine]))
@@ -58,6 +60,7 @@
 
   clojure.lang.ISeq
   (compile [sexp machine]
+    (info (pr-str sexp))
     (let [op (first sexp)
           args (rest sexp)]
       (cond
@@ -71,7 +74,14 @@
        (let [[[arg-list & body]] args]
          (in state-m
            (start-function machine arg-list)
+           (compile (cons 'do body) machine)
+           (fetch-state) :as stack
+           (return (println stack))
            (end-function machine nil)))
+       (= 'do op)
+       (if (< (count args) 2)
+         (compile (first args) machine)
+         (println "FOO"))
        :else
        (in state-m
          (update-state conj :fn-call)
@@ -94,5 +104,9 @@
 
   clojure.lang.Symbol
   (compile [symbol machine]
-    (resolve-var machine symbol)))
+    (in state-m
+      (local? machine symbol) :as local?
+      (if local?
+        (access-local machine symbol)
+        (resolve-var machine symbol)))))
 

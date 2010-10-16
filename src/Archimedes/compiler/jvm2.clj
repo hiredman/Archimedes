@@ -167,7 +167,7 @@
 
   (init [machine values]
     (in state-m
-      (update-state conj (Init. machine values))))
+      (update-state conj :init)))
 
   (fin [machine values]
     (in state-m
@@ -220,11 +220,11 @@
 
   (start-procedure [machine name attrs]
     (in state-m
-      (update-state conj (StartProcedure. machine name attrs))))
+      (update-state conj :start-proc)))
 
   (end-procedure [machine]
     (in state-m
-      (update-state conj (EndProcedure. machine))))
+      (update-state conj :end-proc)))
 
   (procedure-call [machine name args]
     (in state-m
@@ -270,8 +270,13 @@
         (return :Object))))
 
   (access-local [machine local]
+    (info "@access-local" local)
     (in state-m
-      (update-state conj (AccessLocal. machine local))))
+      (fetch-state) :as stack
+      (return (.indexOf (:arglist (first (filter #(= Locals (type %)) (reverse stack)))) local)) :as local-index
+      (return (info (str "local-index: " local-index)))
+      (return (doto (current-methodwriter stack)
+                (.visitIntInsn (op ALOAD) (inc local-index))))))
 
   (immediate [machine value attrs]
     (condp #(isa? %2 %) (type value)
@@ -297,6 +302,7 @@
         (return :String))))
 
   (start-function [machine args]
+    (info "@start-function")
     (in state-m
       (fetch-state) :as stack
       (return (current-scope stack)) :as scope
@@ -305,13 +311,10 @@
                     (function-classwriter fn-name)
                     (Scope. fn-name)
                     (Locals. args))
-      (function-methodwriter (count args))
-      (fetch-state) :as stack
-      (return (current-methodwriter stack)) :as method-writer
-      (return (doto method-writer
-                (.visitIntInsn (op ALOAD) 1)))))
+      (function-methodwriter (count args))))
 
   (end-function [machine args]
+    (info "@end-function")
     (in state-m
       (fetch-state) :as stack
       (return (current-methodwriter stack)) :as method-writer
@@ -321,12 +324,18 @@
                 (.visitEnd)))
       (default-ctor "clojure/lang/AFn")
       (return (current-classwriter stack)) :as class-writer
-      (return (doto class-writer
-                (.visitEnd)))
+      (return (doto class-writer (.visitEnd)))
       (return (current-class-name stack)) :as fn-class-name
-      (return (do (.putNextEntry jaros (ZipEntry. (format "%s.class" (.replaceAll fn-class-name "\\." "/"))))
-                  (copy (.toByteArray class-writer) jaros)
-                  (.closeEntry jaros)))
+      (return (do
+                (.putNextEntry
+                 jaros
+                 (ZipEntry.
+                  (format
+                   "%s.class"
+                   (.replaceAll
+                    fn-class-name "\\." "/"))))
+                (copy (.toByteArray class-writer) jaros)
+                (.closeEntry jaros)))
       (update-state pop) ;method writer
       (update-state pop) ;locals
       (update-state pop) ;scope
@@ -356,6 +365,13 @@
       (return
        (update-in ns [:mappings] swap! into (map (fn [[n v]] [n (Var. (name (.getName (.ns v))) (name (.sym v)))]) (ns-publics (create-ns namespace)))))
       (return nil)))
+
+  (local? [machine name]
+    (info "@local?" name)
+    (in state-m
+      (fetch-state) :as stack
+      (return (first (filter #(and (= Locals (type %)) (some #{name} (:arglist %))) stack))) :as locals
+      (return (boolean locals))))
 
   (define [machine name value]
     (in state-m
