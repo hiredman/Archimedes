@@ -249,8 +249,8 @@
       (fetch-state) :as stack
       (return (current-namespace stack)) :as ns
       (return (@(:mappings ns) var)) :as var
-      (compile (:namespace var) machine)
-      (compile (:name var) machine)
+      (immediate machine (:namespace var) nil)
+      (immediate machine (:name var) nil)
       (method-call (op INVOKESTATIC)
                    "clojure/lang/RT"
                    "var"
@@ -336,10 +336,7 @@
                     fn-class-name "\\." "/"))))
                 (copy (.toByteArray class-writer) jaros)
                 (.closeEntry jaros)))
-      (update-state pop) ;method writer
-      (update-state pop) ;locals
-      (update-state pop) ;scope
-      (update-state pop) ;classwriter
+      (update-state (comp pop pop pop pop))          ;method writer
       (fetch-state) :as stack
       (return (current-methodwriter stack)) :as method-writer
       (return (doto method-writer
@@ -374,6 +371,7 @@
       (return (boolean locals))))
 
   (define [machine name value]
+    (info (str "Define " name " " value))
     (in state-m
       (fetch-state) :as stack
       (return (current-namespace stack)) :as ns
@@ -396,6 +394,7 @@
                         "Ljava/lang/String;"
                         "Ljava/lang/Object;)"
                         "Lclojure/lang/Var;"))
+      (return (info "Defined"))
       (return :Var))))
 
 
@@ -408,6 +407,7 @@
 
   (let [jvm (jvm)
         [bytes _] ((in state-m
+                     (return (info "Starting Run"))
                      (reduce
                       (fn [m form]
                         (bind m (fn [_] (compile form jvm))))
@@ -421,6 +421,7 @@
                      (produce jvm nil) :as x
                      (return x))
                    [])]
+    (info "End Run")
     (copy bytes (file "/tmp/foo.jar")))
 
   )

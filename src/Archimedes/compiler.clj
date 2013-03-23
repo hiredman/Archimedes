@@ -60,7 +60,7 @@
 
   clojure.lang.ISeq
   (compile [sexp machine]
-    (info (pr-str sexp))
+    (info (str "Compiling: " (pr-str sexp)))
     (let [op (first sexp)
           args (rest sexp)]
       (cond
@@ -75,8 +75,6 @@
          (in state-m
            (start-function machine arg-list)
            (compile (cons 'do body) machine)
-           (fetch-state) :as stack
-           (return (println stack))
            (end-function machine nil)))
        (= 'do op)
        (if (< (count args) 2)
@@ -84,6 +82,7 @@
          (println "FOO"))
        :else
        (in state-m
+         (return (info "function call"))
          (update-state conj :fn-call)
          (reduce
           (fn [m args]
@@ -96,14 +95,17 @@
 
   Number
   (compile [number machine]
+    (info (format "immediate: %s" number))
     (immediate machine number nil))
 
   java.lang.String
   (compile [string machine]
+    (info (format "immediate: %s" string))
     (immediate machine string nil))
 
   clojure.lang.Symbol
   (compile [symbol machine]
+    (info (format "symbol: %s" symbol))
     (in state-m
       (local? machine symbol) :as local?
       (if local?
