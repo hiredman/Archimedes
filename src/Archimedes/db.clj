@@ -116,10 +116,10 @@
    :subtract {:arity 2}
    :zero? {:arity 1
            :return :boolean}
-   ;;:neg {:arity 1}
+   :neg {:arity 1}
    :divide {:arity 2}
    :multiply {:arity 2}
-   ;; :quotient {:arity 2}
+   :quotient {:arity 2}
    ;; :remainder {:arity 2}
    ;; :equiv {:arity 2}
    ;; :lt {:arity 2}
