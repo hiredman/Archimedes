@@ -1,64 +1,54 @@
 (ns Archimedes.bar
   (:refer-clojure :exclude [== gensym])
   (:require [clojure.core.logic :refer :all]
-            [Archimedes.db :refer [types- type-db operations operations- natural-division-result]]))
+            [Archimedes.db :refer [types- type-db operations operations- natural-division-result]]
+            [clojure.java.io :as io]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; predicates
 
 (defn binaryo [op]
-  (fresh
-    [a]
+  (fresh [a]
     (operations- op 2 a)))
 
 (defn unaryo [op]
-  (fresh
-    [a]
+  (fresh [a]
     (operations- op 1 a)))
 
 (defn not-boxedo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b c d :unboxed e)))
 
 (defn boxedo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b c d :boxed e)))
 
 (defn floating-pointo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b c :floating d e)))
 
 (defn not-floating-pointo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b c :none d e)))
 
 (defn naturalo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a :natural b c d e)))
 
 (defn not-naturalo [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a :other b c d e)))
 
 (defn fixed-widtho [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b :fixed c d e)))
 
 (defn not-fixed-widtho [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b :open c d e)))
 
 (defn returnable [type]
-  (fresh
-    [a b c d e]
+  (fresh [a b c d e]
     (types- type a b c d e :return)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -70,8 +60,7 @@
    [(pred arg2)]))
 
 (defn botho [pred arg1 arg2]
-  (fresh
-    []
+  (fresh []
     (pred arg1)
     (pred arg2)))
 
@@ -128,14 +117,12 @@
    [(!= op :divide)]))
 
 (defn constrain-returno [return]
-  (fresh
-    []
+  (fresh []
     (returnable return)
     (not-boxedo return)))
 
 (defn setupo [q op arg1 arg2 return]
-  (fresh
-    []
+  (fresh []
     (== q [op arg1 arg2 return])
     (membero op (keys operations))
     (membero arg1 (keys type-db))
@@ -162,10 +149,8 @@
 ;; driver
 
 (defn f []
-  (run*
-    [q]
-    (fresh
-      [op arg1 arg2 return]
+  (run* [q]
+    (fresh [op arg1 arg2 return]
       (setupo q op arg1 arg2 return)
       (binaryo op)
       (constrain-returno return)
@@ -180,7 +165,7 @@
       (natural-contaminato op arg1 arg2 return)
       )))
 
-(def gensym-id (atom 0))
+(def ^:dynamic gensym-id (atom 0))
 
 (defn gensym [n]
   (let [id (swap! gensym-id inc)]
@@ -665,11 +650,13 @@
 (defn h []
   (for [[op arg1 arg2 return :as m] (sort-by (fn [[op a1 a2 r]]
                                                [op r a1 a2]) (f))
-        ;; :when (not= return :Number)
-        :let [an1 (gensym 'a)
-              an2 (gensym 'b)
-              [x] (run 1 [q]
-                    (g op arg1 arg2 return an1 an2 () q))
+        :let [[an1 an2 [x]] (binding [gensym-id (atom 0)]
+                              (let [an1 (gensym 'a)
+                                    an2 (gensym 'b)]
+                                [an1 an2
+                                 (doall
+                                  (run 1 [q]
+                                    (g op arg1 arg2 return an1 an2 () q)))]))
               x (reverse x)]]
     (cond
      (seq x)
@@ -703,9 +690,12 @@
              (name arg2)))))
 
 
-(defn code-gen []
-  (println
-   "package archimedes;
+(defn code-gen [output]
+  (.mkdirs (.getParentFile (io/file output)))
+  (spit output
+        (with-out-str
+          (println
+           "package archimedes;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -714,6 +704,6 @@ import clojure.lang.BigInt;
 
     public class MathOps {
 ")
-  (doseq [l (h)]
-    (println l))
-  (println "}"))
+          (doseq [l (h)]
+            (println l))
+          (println "}"))))
