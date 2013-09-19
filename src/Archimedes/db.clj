@@ -120,13 +120,12 @@
    :divide {:arity 2}
    :multiply {:arity 2}
    :quotient {:arity 2}
-   ;; :remainder {:arity 2}
+   :remainder {:arity 2}
    ;; :equiv {:arity 2}
    ;; :lt {:arity 2}
    ;; :lte {:arity 2}
    ;; :gt {:arity 2}
    ;; :gte {:arity 2}
-   
    })
 
 (doseq [[type-name data] type-db]
