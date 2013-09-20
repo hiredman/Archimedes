@@ -171,27 +171,85 @@
   (let [id (swap! gensym-id inc)]
     (symbol (str (name n) id))))
 
-(defrecord V [type name])
+(defprotocol HasMethods
+  (-invoke [thing method args]))
+
+(defprotocol HasFields
+  (field [thing field]))
+
+(defprotocol CanBeCast
+  (C [thing type]))
+
+(defprotocol Assignable
+  (Bind [thing value]))
+
+(defn invoke [thing m & args]
+  (-invoke thing m args))
+
+(defrecord V [type name]
+  HasMethods
+  (-invoke [_ method args]
+    (->V nil (str name "." (clojure.core/name method) "(" (apply str (interpose \, (map :name args))) ")")))
+  HasFields
+  (field [_ field]
+    (->V nil (str name "." (clojure.core/name field))))
+  CanBeCast
+  (C [_ type]
+    (assert (keyword? type))
+    (->V type (str "(" (clojure.core/name type)  ")" name)))
+  Assignable
+  (Bind [_ value]
+    (assert type)
+    (str (clojure.core/name type)
+         " "
+         (clojure.core/name name)
+         " = "
+         value
+         ";"))
+  Object
+  (toString [_]
+    (clojure.core/name name)))
+
+(def ONE (->V :long "1"))
+
+(defn ctor [type & args]
+  {:pre [(keyword? type)]}
+  (let [n (apply str (interpose \, (map :name args)))]
+    (->V type
+         (str "new " (name type) "(" n ")"))))
+
+(defn static [method & args]
+  (let [n (apply str (interpose \, args))]
+    (->V nil (str (name method) "(" n ")"))))
+
+(defn big-integer []
+  (->V :BigInteger (gensym 'bi)))
+
+(defn big-decimal []
+  (->V :BigDecimal (gensym 'bd)))
+
+(defn ratio []
+  (->V :Ratio (gensym 'rat)))
 
 (defn casto [start end in-code out-code]
   (conde
    ;; to BigDec
    [(== (:type start) :BigInteger)
     (== (:type end) :BigDecimal)
-    (conso (str (name (:type end)) " " (:name end) " = new BigDecimal(" (:name start) ");") in-code out-code)]
+    (conso (Bind end (ctor :BigDecimal start)) in-code out-code)]
    [(== (:type start) :Ratio)
     (== (:type end) :BigDecimal)
-    (conso (str (name (:type end)) " " (:name end) " = " (:name start) ".decimalValue();") in-code out-code)]
+    (conso (Bind end (invoke start :decimalValue)) in-code out-code)]
    [(== (:type start) :double)
     (== (:type end) :BigDecimal)
-    (conso (str (name (:type end)) " " (:name end) " = new BigDecimal(" (:name start) ");") in-code out-code)]
+    (conso (Bind end (ctor :BigDecimal start)) in-code out-code)]
    [(== (:type start) :Double)
     (== (:type end) :BigDecimal)
-    (conso (str (name (:type end)) " " (:name end) " = new BigDecimal(" (:name start) ".doubleValue());")
+    (conso (Bind end (ctor :BigDecimal (invoke start :doubleValue)))
            in-code out-code)]
    [(== (:type start) :float)
     (== (:type end) :BigDecimal)
-    (conso (str (name (:type end)) " " (:name end) " = new BigDecimal((double)" (:name start) ");") in-code out-code)]
+    (conso (Bind end (ctor :BigDecimal (C start :double))) in-code out-code)]
    [(== (:type start) :long)
     (== (:type end) :BigDecimal)
     (let [en (->V :BigInteger (gensym 'c))]
@@ -206,7 +264,7 @@
         (casto en end x out-code)))]
    [(== (:type start) :BigInt)
     (== (:type end) :BigDecimal)
-    (let [en (->V :BigInteger (gensym 'm))]
+    (let [en (big-integer)]
       (fresh [x]
         (casto start en in-code x)
         (casto en end x out-code)))]
@@ -215,32 +273,31 @@
    ;; BigInt
    [(== (:type start) :long)
     (== (:type end) :BigInt)
-    (conso (str (name (:type end)) " " (:name end) " = BigInt.fromLong(" (:name start) ");") in-code out-code)]
+    (conso (Bind end (static :BigInt.fromLong start)) in-code out-code)]
    [(== (:type start) :int)
     (== (:type end) :BigInt)
-    (conso (str (name (:type end)) " " (:name end) " = BigInt.fromLong((int)" (:name start) ");") in-code out-code)]
+    (conso (Bind end (static :BigInt.fromLong (C start :long))) in-code out-code)]
    [(== (:type start) :BigInteger)
     (== (:type end) :BigInt)
-    (conso (str (name (:type end)) " " (:name end) " = BigInt.fromBigInteger(" (:name start) ");") in-code out-code)]
+    (conso (Bind end (static :BigInt.fromBigInteger start)) in-code out-code)]
    ;;
    ;;
    ;;BigInteger
    [(== (:type start) :BigInt)
     (== (:type end) :BigInteger)
-    (conso (str (name (:type end)) " " (:name end) " = " (:name start) ".toBigInteger();") in-code out-code)]
+    (conso (Bind end (invoke start :toBigInteger)) in-code out-code)]
    [(== (:type start) :long)
     (== (:type end) :BigInteger)
-    (conso (str (name (:type end)) " " (:name end) " = BigInteger.valueOf(" (:name start) ");") in-code out-code)]
+    (conso (Bind end (static :BigInteger.valueOf start)) in-code out-code)]
    [(== (:type start) :int)
     (== (:type end) :BigInteger)
-    (conso (str (name (:type end)) " " (:name end) " = BigInteger.valueOf((long)" (:name start) ");") in-code out-code)]
+    (conso (Bind end (static :BigInteger.valueOf (C start :long))) in-code out-code)]
    ;;
    ;;
    ;; Ratio
    [(== (:type start) :BigInteger)
     (== (:type end) :Ratio)
-    (conso (str (name (:type end)) " " (:name end)
-                " = new Ratio(" (:name start) ", BigInteger.valueOf(1));") in-code out-code)]
+    (conso (Bind end (ctor :Ratio start (static :BigInteger.valueOf ONE))) in-code out-code)]
    [(== (:type start) :BigInt)
     (== (:type end) :Ratio)
     (let [en (->V :BigInteger (gensym 'c))]
@@ -264,31 +321,32 @@
    ;; long
    [(== (:type start) :int)
     (== (:type end) :long)
-    (conso (str (name (:type end)) " " (:name end) " = (long)" (:name start) ";") in-code out-code)]
+    (conso (Bind end (C start :long)) in-code out-code)]
    ;; continue
    [(== (:type start) (:type end))
-    (conso (str (name (:type end)) " " (:name end) " = " (:name start) ";") in-code out-code)]
+    (conso (Bind end start) in-code out-code)]
    [(== (:type start) :Long)
     (== (:type end) :long)
-    (conso (str "long " (:name end) " = " (:name start) ".longValue();") in-code out-code)]
+    (conso (Bind end (invoke start :longValue)) in-code out-code)]
    [(== (:type start) :Integer)
     (== (:type end) :long)
-    (conso (str "long " (:name end) " = " (:name start) ".longValue();") in-code out-code)]))
+    (conso (Bind end (invoke start :longValue)) in-code out-code)]))
 
 (defn unbox [arg1 new-arg1 in-code out-code]
   (conde
    [(== (:type arg1) :Long)
     (== (:type new-arg1) :long)
-    (conso (str "long " (:name new-arg1) " = " (:name arg1) ".longValue();") in-code out-code)]
+    ;; god damn logic vars
+    (conso (Bind (assoc new-arg1 :type :long) (invoke arg1 :longValue)) in-code out-code)]
    [(== (:type arg1) :Integer)
     (== (:type new-arg1) :long)
-    (conso (str "long " (:name new-arg1) " = " (:name arg1) ".longValue();") in-code out-code)]
+    (conso (Bind (assoc new-arg1 :type :long) (invoke arg1 :longValue)) in-code out-code)]
    [(== (:type arg1) :Double)
     (== (:type new-arg1) :double)
-    (conso (str "double " (:name new-arg1) " = " (:name arg1) ".doubleValue();") in-code out-code)]
+    (conso (Bind (assoc new-arg1 :type :double) (invoke arg1 :doubleValue)) in-code out-code)]
    [(== (:type arg1) :Float)
     (== (:type new-arg1) :double)
-    (conso (str "double " (:name new-arg1) " = " (:name arg1) ".doubleValue();") in-code out-code)]))
+    (conso (Bind (assoc new-arg1 :type :double) (invoke arg1 :doubleValue)) in-code out-code)]))
 
 (defn to-java* [free form]
   (cond
@@ -340,6 +398,7 @@
 
 (declare g)
 
+
 (defn addo [op arg1 arg2 return in-code out-code]
   (conde
    [(== op :add)
@@ -347,23 +406,23 @@
     (not-boxedo (:type arg2))
     (== return :long)
     (fresh [a b c]
-      (conso (str "long ret = (long)" (:name arg1) " + (long)" (:name arg2) ";") in-code a)
-      (conso (str "if ((ret ^ " (:name arg1) ") < 0 && (ret ^ " (:name arg2) ") < 0)") a b)
+      (conso (str "long ret = " (C arg1 :long) " + " (C arg2 :long) ";") in-code a)
+      (conso (str "if ((ret ^ " (:name arg1) ") < 0 && (ret ^ " arg2 ") < 0)") a b)
       (conso (str "  throw new RuntimeException(\"overflow\");") b c)
       (conso "ret;" c out-code))]
    [(== op :add)
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" (:name arg1) " + (double)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :double) " + " (C arg2 :double) ";") in-code out-code)]
    [(== return :BigDecimal)
     (== op :add)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".add(" (:name b1) ");") bb out-code)))]
+        (conso (str (invoke a1 :add b1) ";") bb out-code)))]
    [(== return :BigInt)
     (== op :add)
     (let [a1 (->V :BigInt (gensym 'a))
@@ -371,11 +430,11 @@
       (fresh [aa bb]
         (casto  arg1 a1 in-code aa)
         (casto  arg2 b1 aa bb)
-        (conso (str (:name a1) ".add(" (:name b1) ");") bb out-code)))]
+        (conso (str (invoke a1 :add b1) ";") bb out-code)))]
    [(== return :Ratio)
     (== op :add)
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -394,36 +453,36 @@
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :long)
-    (conso (str "(long)" (:name arg1) " - (long)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :long) " - " (C arg2 :long) ";") in-code out-code)]
    [(== op :subtract)
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" (:name arg1) " - (double)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :double) " - " (C arg2 :double) ";") in-code out-code)]
    [(== return :BigDecimal)
     (== op :subtract)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".subtract(" (:name b1) ");") bb out-code)))]
+        (conso (str (invoke a1 :subtract b1) ";") bb out-code)))]
    [(== return :BigInt)
     (== op :subtract)
-    (let [a1 (->V :BigInteger (gensym 'a))
-          b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (big-integer)
+          b1 (big-integer)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str "BigInt.fromBigInteger(" (:name a1) ".subtract(" (:name b1) "));") bb out-code)))]
+        (conso (str "BigInt.fromBigInteger(" (invoke a1 :subtract b1) ");") bb out-code)))]
    [(== op :subtract)
     (conde
      [(== (:type arg1) :Ratio)
       (!= (:type arg2) :Ratio)]
      [(== (:type arg2) :Ratio)
       (!= (:type arg1) :Ratio)])
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -431,7 +490,8 @@
    [(== op :subtract)
     (== (:type arg1) :Ratio)
     (== (:type arg2) :Ratio)
-    (conso (str "add(" (:name arg1) "," "new Ratio(" (:name arg2) ".numerator.negate()," (:name arg2) ".denominator));")
+    (conso (str "add(" arg1 ","
+                (ctor :Ratio (invoke (field arg2 :numerator) :negate) (field arg2 :denominator)) ");")
            in-code
            out-code)]))
 
@@ -453,8 +513,8 @@
       (!= (:type arg2) :Ratio)]
      [(== (:type arg2) :Ratio)
       (!= (:type arg1) :Ratio)])
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -463,20 +523,20 @@
                out-code)))]
    [(== return :BigInt)
     (== op :multiply)
-    (let [a1 (->V :BigInteger (gensym 'a))
-          b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (big-integer)
+          b1 (big-integer)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str "BigInt.fromBigInteger(" (:name a1) ".multiply(" (:name b1) "));") bb out-code)))]
+        (conso (str "BigInt.fromBigInteger(" (invoke a1 :multiply b1) ");") bb out-code)))]
    [(== return :BigDecimal)
     (== op :multiply)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".multiply(" (:name b1) ");") bb out-code)))]
+        (conso (str (invoke a1 :multiply b1) ";") bb out-code)))]
    [(== op :multiply)
     (== (:type arg1) :Ratio)
     (== (:type arg2) :Ratio)
@@ -490,15 +550,15 @@
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" (:name arg1) " / (double)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :double) " / " (C arg2 :double) ";") in-code out-code)]
    [(== op :divide)
     (== return :Ratio)
-    (let [a1 (->V :BigInteger (gensym 'a))
-          b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (big-integer)
+          b1 (big-integer)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str "new Ratio(" (:name a1) ", " (:name b1) ");")
+        (conso (str (ctor :Ratio a1 b1) ";") 
                bb
                out-code)))]
    [(== op :divide)
@@ -507,8 +567,8 @@
       (!= (:type arg2) :Ratio)]
      [(== (:type arg2) :Ratio)
       (!= (:type arg1) :Ratio)])
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -516,17 +576,17 @@
    [(== op :divide)
     (== (:type arg1) :Ratio)
     (== (:type arg2) :Ratio)
-    (conso (str (ratio-divide* {'rx (:name arg1) 'ry (:name arg2)}) ";")
+    (conso (str (ratio-divide* {'rx arg1 'ry arg2}) ";")
            in-code
            out-code)]
    [(== return :BigDecimal)
     (== op :divide)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".divide(" (:name b1) ");") bb out-code)))]))
+        (conso (str (invoke a1 :divide b1) ";") bb out-code)))]))
 
 (defn quotiento [op arg1 arg2 return in-code out-code]
   (conde
@@ -534,36 +594,36 @@
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :long)
-    (conso (str "(long)" (:name arg1) " / (long)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :long) " / " (C arg2 :long) ";") in-code out-code)]
    [(== op :quotient)
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" (:name arg1) " / (double)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :double) " / " (C arg2 :double) ";") in-code out-code)]
    [(== return :BigInt)
     (== op :quotient)
-    (let [a1 (->V :BigInteger (gensym 'a))
-          b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (big-integer)
+          b1 (big-integer)]
       (fresh [aa bb cc]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str "BigInt.fromBigInteger(" (:name a1) ".divide(" (:name b1) "));") bb out-code)))]
+        (conso (str (static :BigInt.fromBigInteger (invoke a1 :divide b1)) ";") bb out-code)))]
    [(== return :BigDecimal)
     (== op :quotient)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".divide(" (:name b1) ");") bb out-code)))]
+        (conso (str a1 ".divide(" b1 ");") bb out-code)))]
    [(== op :quotient)
     (conde
      [(== (:type arg1) :Ratio)
       (!= (:type arg2) :Ratio)]
      [(== (:type arg2) :Ratio)
       (!= (:type arg1) :Ratio)])
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -582,36 +642,36 @@
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :long)
-    (conso (str "(long)" (:name arg1) " / (long)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :long) " / " (C arg2 :long) ";") in-code out-code)]
    [(== op :remainder)
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" (:name arg1) " / (double)" (:name arg2) ";") in-code out-code)]
+    (conso (str (C arg1 :double) " / " (C arg2 :double) ";") in-code out-code)]
    [(== return :BigInt)
     (== op :remainder)
-    (let [a1 (->V :BigInteger (gensym 'a))
-          b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (big-integer)
+          b1 (big-integer)]
       (fresh [aa bb cc]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str "BigInt.fromBigInteger(" (:name a1) ".divide(" (:name b1) "));") bb out-code)))]
+        (conso (str (static :BigInt.fromBigInteger (invoke a1 :divide b1)) ";") bb out-code)))]
    [(== return :BigDecimal)
     (== op :remainder)
-    (let [a1 (->V :BigDecimal (gensym 'a))
-          b1 (->V :BigDecimal (gensym 'b))]
+    (let [a1 (big-decimal)
+          b1 (big-decimal)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
-        (conso (str (:name a1) ".divide(" (:name b1) ");") bb out-code)))]
+        (conso (str (invoke a1 :divide b1) ";") bb out-code)))]
    [(== op :remainder)
     (conde
      [(== (:type arg1) :Ratio)
       (!= (:type arg2) :Ratio)]
      [(== (:type arg2) :Ratio)
       (!= (:type arg1) :Ratio)])
-    (let [a1 (->V :Ratio (gensym 'a))
-          b1 (->V :Ratio (gensym 'b))]
+    (let [a1 (ratio)
+          b1 (ratio)]
       (fresh [aa bb]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
@@ -657,13 +717,13 @@
         :when (= :object (:representation v))
         :when (not= k :Object)
         :when (not= k :Number)]
-    (format "if (%s instanceof %s)\n   return %s((%s)%s, %s);"
+    (format "if (%s instanceof %s)\n   return %s(%s, (%s)%s);"
             arg1
             (name k)
             (name op)
+            arg2
             (name k)
-            arg1
-            arg2)))
+            arg1)))
 
 ;; code gen
 (defn h []
