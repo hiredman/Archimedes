@@ -534,17 +534,17 @@
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :long)
-    (conso (str "(long)" arg1 " / (long)" arg2 ";") in-code out-code)]
+    (conso (str "(long)" (:name arg1) " / (long)" (:name arg2) ";") in-code out-code)]
    [(== op :quotient)
     (not-boxedo (:type arg1))
     (not-boxedo (:type arg2))
     (== return :double)
-    (conso (str "(double)" arg1 " / (double)" arg2 ";") in-code out-code)]
+    (conso (str "(double)" (:name arg1) " / (double)" (:name arg2) ";") in-code out-code)]
    [(== return :BigInt)
     (== op :quotient)
-    (fresh [aa bb cc]
-      (let [a1 (->V :BigInteger (gensym 'a))
-            b1 (->V :BigInteger (gensym 'b))]
+    (let [a1 (->V :BigInteger (gensym 'a))
+          b1 (->V :BigInteger (gensym 'b))]
+      (fresh [aa bb cc]
         (casto arg1 a1 in-code aa)
         (casto arg2 b1 aa bb)
         (conso (str "BigInt.fromBigInteger(" (:name a1) ".divide(" (:name b1) "));") bb out-code)))]
@@ -573,7 +573,8 @@
     (== (:type arg2) :Ratio)
     (conso (str (ratio-divide* {'rx (:name arg1) 'ry (:name arg2)}) ";")
            in-code
-           out-code)]))
+           out-code)]
+   ))
 
 (defn remaindero [op arg1 arg2 return in-code out-code]
   (conde
@@ -668,8 +669,6 @@
 (defn h []
   (for [[op arg1 arg2 return :as m] (sort-by (fn [[op a1 a2 r]]
                                                [op r a1 a2]) (f))
-        :when (or (= op :add)
-                  (= op :divide))
         :let [_ (binding [*out* *err*]
                   #_(prn m))
               [an1 an2 [x]] (binding [gensym-id (atom 0)]
